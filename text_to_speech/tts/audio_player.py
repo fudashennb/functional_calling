@@ -109,7 +109,7 @@ class TTSServiceConfig:
             logger.info(f"从数据库读取TTS服务URL: {self.service_url}")
         else:
             # 从环境变量或默认值读取
-            self.service_url = os.getenv('TTS_SERVICE_URL', 'http://10.62.232.70:40010/tts')
+            self.service_url = os.getenv('TTS_SERVICE_URL', 'http://10.10.68.49:5000/tts')
             logger.info(f"使用环境变量/默认值TTS服务URL: {self.service_url}")
         
         # 从数据库读取超时配置
