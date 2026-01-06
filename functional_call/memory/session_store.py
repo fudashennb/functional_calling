@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import threading
 import time
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -33,6 +36,9 @@ class SessionState:
 
     # 运行态
     active_request_id: str | None = None
+    
+    # 外部引用的 JobManager，用于实现自愈检查
+    _job_manager: Any = None 
 
     # 机器人状态缓存（结构化dict）
     robot_state_cache: Dict[str, Any] = field(default_factory=dict)
@@ -42,6 +48,29 @@ class SessionState:
         self.conversation.append(ConversationMessage(role=role, content=content))
         if len(self.conversation) > self.max_conversation:
             self.conversation = self.conversation[-self.max_conversation :]
+
+    def is_busy(self) -> bool:
+        """
+        判断当前会话是否处于任务执行中。
+        利用 JobManager 进行实时交叉比对，防止僵尸任务。
+        """
+        if not self.active_request_id:
+            return False
+            
+        if not self._job_manager:
+            # 如果没有 JobManager 引用，只能回退到简单判定
+            return True
+            
+        job = self._job_manager.get(self.active_request_id)
+        if job and job.status == "running":
+            return True
+            
+        # 自愈：如果 JobManager 里的任务已经结束，但 Session 还记着 ID
+        if self.active_request_id:
+            logger.info(f"🔄 Session {self.session_id} 发现僵尸任务 ID {self.active_request_id}，正在执行自愈清理。")
+            self.active_request_id = None
+            
+        return False
 
 
 class SessionStore:
@@ -60,5 +89,3 @@ class SessionStore:
     def get(self, session_id: str) -> SessionState | None:
         with self._lock:
             return self._sessions.get(session_id)
-
-

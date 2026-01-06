@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from tools.base import BaseToolbox
 
 if TYPE_CHECKING:
+    import threading
     from tools.robot_client import RobotClient, EventEmitter
 
 logger = logging.getLogger(__name__)
@@ -15,14 +16,35 @@ class ActionToolbox(BaseToolbox):
     def __init__(self, robot: RobotClient) -> None:
         super().__init__(robot)
 
-    def execute_action(self, action_id: int, param1: int, param2: int, *, timeout_s: int = 60, emit: EventEmitter | None = None) -> None:
-        self.robot.execute_action(action_id, param1, param2, timeout_s=timeout_s, emit=emit)
+    def execute_action(
+        self, 
+        action_id: int, 
+        param1: int, 
+        param2: int, 
+        *, 
+        timeout_s: int = 60, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
+        self.robot.execute_action(action_id, param1, param2, timeout_s=timeout_s, emit=emit, stop_event=stop_event)
 
-    def start_charge(self, *, timeout_s: int = 60, emit: EventEmitter | None = None) -> None:
-        self.robot.start_charge(timeout_s=timeout_s, emit=emit)
+    def start_charge(
+        self, 
+        *, 
+        timeout_s: int = 60, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
+        self.robot.start_charge(timeout_s=timeout_s, emit=emit, stop_event=stop_event)
 
-    def stop_charge(self, *, timeout_s: int = 60, emit: EventEmitter | None = None) -> None:
-        self.robot.stop_charge(timeout_s=timeout_s, emit=emit)
+    def stop_charge(
+        self, 
+        *, 
+        timeout_s: int = 60, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
+        self.robot.stop_charge(timeout_s=timeout_s, emit=emit, stop_event=stop_event)
 
     def get_prompt_fragment(self) -> str:
         return (
@@ -31,4 +53,3 @@ class ActionToolbox(BaseToolbox):
             "- start_charge(): 开始充电。\n"
             "- stop_charge(): 停止充电。\n"
         )
-

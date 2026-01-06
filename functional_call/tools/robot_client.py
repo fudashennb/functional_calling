@@ -85,7 +85,14 @@ class RobotClient:
         with self._lock:
             self._sdk.cancel_task()
 
-    def move_to_station(self, station_no: int, *, timeout_s: int = 120, emit: EventEmitter | None = None) -> None:
+    def move_to_station(
+        self, 
+        station_no: int, 
+        *, 
+        timeout_s: int = 120, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
         emit = emit or (lambda _t, _d=None: None)
 
         # 如果已有任务在跑，先尝试取消
@@ -109,6 +116,12 @@ class RobotClient:
         start = time.time()
         last_progress_emit = 0.0
         while True:
+            # 优先检查停止信号
+            if stop_event and stop_event.is_set():
+                logger.info("⏹️ 导航任务收到中断信号，正在取消机器人底层任务...")
+                self.cancel_current_task()
+                raise InterruptedError("导航任务已被取消")
+
             elapsed = int(time.time() - start)
             if elapsed >= timeout_s:
                 raise TimeoutError(f"导航到站点{station_no}超时（已等待{timeout_s}秒）")
@@ -117,7 +130,7 @@ class RobotClient:
             with self._lock:
                 t = self._sdk.get_movement_task_info()
 
-            # 进度播报节流：每5秒一次 + 状态变化可加
+            # 进度播报节流：每5秒一次
             if time.time() - last_progress_emit >= 5:
                 last_progress_emit = time.time()
                 emit(
@@ -131,7 +144,6 @@ class RobotClient:
                 )
 
             if t.state == MovementState.MT_FINISHED and (t.no == task_no or task_no == 0):
-                # 读取结果（get_movement_task_info 已包含 result/result_value）
                 if t.result == MovementResult.MT_TASK_ERROR:
                     raise RuntimeError(f"导航任务失败：错误码 {t.result_value}")
                 emit("step_done", {"text": f"已到达站点 {station_no}，耗时 {elapsed} 秒。"})
@@ -147,6 +159,7 @@ class RobotClient:
         *,
         timeout_s: int = 60,
         emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
     ) -> None:
         emit = emit or (lambda _t, _d=None: None)
         task_no = self._next_task_no()
@@ -158,6 +171,11 @@ class RobotClient:
         start = time.time()
         last_progress_emit = 0.0
         while True:
+            if stop_event and stop_event.is_set():
+                logger.info("⏹️ 动作任务收到中断信号，正在取消机器人底层任务...")
+                self.cancel_current_task()
+                raise InterruptedError("动作任务已被取消")
+
             elapsed = int(time.time() - start)
             if elapsed >= timeout_s:
                 raise TimeoutError(f"动作任务超时（已等待{timeout_s}秒）")
@@ -185,7 +203,13 @@ class RobotClient:
 
             time.sleep(1)
 
-    def start_charge(self, *, timeout_s: int = 60, emit: EventEmitter | None = None) -> None:
+    def start_charge(
+        self, 
+        *, 
+        timeout_s: int = 60, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
         emit = emit or (lambda _t, _d=None: None)
         
         logger.info("正在检查当前充电状态...")
@@ -204,10 +228,13 @@ class RobotClient:
         
         start = time.time()
         while True:
+            if stop_event and stop_event.is_set():
+                logger.info("⏹️ 充电轮询收到中断信号")
+                raise InterruptedError("充电任务已被取消")
+
             elapsed = int(time.time() - start)
             current_status = self.is_charging()
             
-            # 每一秒都打印详细日志到控制台（提升到 INFO 级别以便观察）
             logger.info(f"[轮询中] 已等待 {elapsed}s, is_charging={current_status}")
             
             if current_status:
@@ -224,7 +251,13 @@ class RobotClient:
             
             time.sleep(1)
 
-    def stop_charge(self, *, timeout_s: int = 60, emit: EventEmitter | None = None) -> None:
+    def stop_charge(
+        self, 
+        *, 
+        timeout_s: int = 60, 
+        emit: EventEmitter | None = None,
+        stop_event: threading.Event | None = None
+    ) -> None:
         emit = emit or (lambda _t, _d=None: None)
         if not self.is_charging():
             emit("step_done", {"text": "机器人当前未在充电。"})
@@ -234,6 +267,10 @@ class RobotClient:
             self._sdk.stop_charge()
         start = time.time()
         while True:
+            if stop_event and stop_event.is_set():
+                logger.info("⏹️ 停止充电轮询收到中断信号")
+                raise InterruptedError("停止充电任务已被取消")
+
             elapsed = int(time.time() - start)
             if not self.is_charging():
                 emit("step_done", {"text": f"充电已停止（耗时 {elapsed} 秒）。"})
@@ -243,5 +280,3 @@ class RobotClient:
             if elapsed % 5 == 0:
                 emit("progress", {"text": f"等待充电停止中，已等待 {elapsed} 秒。", "elapsed_s": elapsed})
             time.sleep(1)
-
-

@@ -1193,7 +1193,7 @@ class AudioStreamReader:
         # 条件2：对话播放状态检查
         conversation_playing_status = self.get_conversation_playing_status()
         is_not_playing = conversation_playing_status.get('is_playing_now', True) == False
-        duration_enough = audio_data.vad_duration > 13
+        duration_enough = audio_data.vad_duration > 180
         condition2 = is_not_playing and duration_enough
         
         # 所有条件都必须满足
@@ -1603,49 +1603,58 @@ class AudioStreamReader:
         向服务器发送查询请求并返回响应
 
         Args:
-            url: 服务器URL
-            text: 查询文本
+            url: 服务器URL。如果为 None，则视为推送语音注入，直接返回处理后的原文本。
+            text: 查询文本或推送文本
 
         Returns:
-            str: 服务器响应的resultMsg内容
+            str: 服务器响应的resultMsg内容，或处理后的推送文本
         """
         try:
-            # 构造请求数据
-            request_data = {
-                "query": text
-            }
-            # 发送POST请求
-            response = requests.post(
-                url,
-                json=request_data,
-                timeout=30  # 30秒超时
-            )
-            # 检查响应状态
-            response.raise_for_status()  # 检查 HTTP 状态码
-            
-            # 解析 JSON 响应（标准 JSON 格式）
-            response_data = response.json()
-            
-            # 验证响应格式并直接返回resultMsg
-            if "resultCode" in response_data and "resultMsg" in response_data:
-                ai_reply = response_data["resultMsg"]  # 直接取字段
-                
-                # 使用配置驱动的文本处理器（替换旧的硬编码方法）
-                ai_reply = self.text_processor.process_text(ai_reply)
-                
-                # 清理多余的空格（多个连续空格替换为单个空格）
-                import re
-                ai_reply = re.sub(r'\s+', ' ', ai_reply).strip()
-                
-                _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:100]}...")
-                
-                # 保存用户请求和AI回复作为证据（请求-回复对）
-                self._save_ai_response_text(text, ai_reply, str(response_data))
-                
-                return ai_reply
+            if url is None:
+                # 融入逻辑：如果是推送消息，模拟服务器响应数据结构
+                ai_reply = text
+                response_data = {"resultCode": 0, "resultMsg": text, "source": "external_push"}
+                _logger.info(f"📥 接收到推送语音内容，正在融入主流程处理...")
             else:
-                _logger.warning(f"⚠️ 服务器响应格式异常（缺少 resultCode/resultMsg）: {response_data}")
-                return "服务器响应格式异常"
+                # 构造请求数据
+                request_data = {
+                    "query": text
+                }
+                # 发送POST请求
+                response = requests.post(
+                    url,
+                    json=request_data,
+                    timeout=30  # 30秒超时
+                )
+                # 检查响应状态
+                response.raise_for_status()  # 检查 HTTP 状态码
+                
+                # 解析 JSON 响应（标准 JSON 格式）
+                response_data = response.json()
+                
+                # 验证响应格式并直接返回resultMsg
+                if "resultCode" in response_data and "resultMsg" in response_data:
+                    ai_reply = response_data["resultMsg"]  # 直接取字段
+                else:
+                    _logger.warning(f"⚠️ 服务器响应格式异常（缺少 resultCode/resultMsg）: {response_data}")
+                    return "服务器响应格式异常"
+            
+            # --- 统一的后续处理逻辑（清洗、记录、保存） ---
+            # 使用配置驱动的文本处理器
+            ai_reply = self.text_processor.process_text(ai_reply)
+            
+            # 清理多余的空格
+            import re
+            ai_reply = re.sub(r'\s+', ' ', ai_reply).strip()
+            
+            # 记录成功日志
+            if url:
+                _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:100]}...")
+            
+            # 保存用户请求和AI回复作为证据（推送消息也会被记录）
+            self._save_ai_response_text(text, ai_reply, str(response_data))
+            
+            return ai_reply
         except requests.exceptions.ConnectionError as e:
             _logger.error(f"❌ 服务器连接失败: 无法连接到 {url} - {e}")
             return "服务器连接失败"

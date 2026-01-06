@@ -588,75 +588,32 @@ async def resume_music():
 @app.post('/voice/callback')
 async def voice_callback(request: VoiceCallbackRequest):
     """
-    接收 functional_call 主动推送的任务事件（计划/故障/结束）
-    
-    工作流程：
-    1. functional_call 在任务开始前推送"计划"（event_type=plan）
-    2. functional_call 在任务出现故障时推送"故障"（event_type=fault）
-    3. functional_call 在任务结束时推送"完成/失败"（event_type=completed/failed）
-    
-    语音端收到后：
-    - 提取 speak_text 并播报
-    - 立即返回 200（不阻塞 functional_call）
+    接收任务事件回调，并通过对话流程（_request_server -> _synthesize_and_play_text）注入播报
     """
     try:
-        _logger.info(f"📥 收到回调推送: event_type={request.event_type}, speak_text={request.speak_text}")
+        _logger.info(f"📥 收到回调推送: {request.speak_text}")
         
-        # 根据事件类型决定播报优先级
-        priority = 1  # 默认高优先级（立即播报）
+        # 定义后台执行逻辑，融入现有对话流水线
+        def run_in_pipeline():
+            # 1. 融入文本清洗和日志记录流程
+            ai_response = conversation_reader._request_server(None, request.speak_text)
+            # 2. 调用现有播放流程
+            conversation_reader._synthesize_and_play_text(ai_response)
+
+        # 异步执行，不阻塞回调发送方
+        threading.Thread(target=run_in_pipeline, daemon=True).start()
         
-        if request.event_type == "plan":
-            # 计划类消息：任务开始前的简短说明
-            _logger.info(f"📋 任务计划: {request.speak_text}")
-            priority = 1
-        elif request.event_type == "fault":
-            # 故障类消息：最高优先级，立即打断当前播放
-            _logger.warning(f"⚠️ 任务故障: {request.speak_text}")
-            priority = 0  # 最高优先级
-        elif request.event_type in ["completed", "failed"]:
-            # 结束类消息：任务完成或失败
-            _logger.info(f"✅ 任务结束: {request.speak_text}")
-            priority = 1
-        else:
-            _logger.warning(f"⚠️ 未知事件类型: {request.event_type}")
-            priority = 2
-        
-        # 创建播放任务（使用 PLAY_CONVERSATION 命令，确保在对话模式下播报）
-        task = PlayTask(
-            file_path="",
-            music_text=request.speak_text,
-            play_interval=0.0,
-            play_count=1,
-            priority=priority,
-            volume=1.0,
-            created_time=time.time(),
-        )
-        task.status_command = StatusCommand.PLAY_CONVERSATION
-        
-        # 估算播放时长
-        task.duration = audio_player.estimate_text_duration(request.speak_text)
-        
-        # 添加到播放队列（高优先级任务会自动排到前面）
-        audio_player.add_to_queue_sync(task)
-        
-        _logger.info(f"✅ 回调消息已加入播放队列: priority={priority}, duration={task.duration:.2f}s")
-        
-        # 立即返回成功（不阻塞 functional_call）
         return {
             'status': 'success',
-            'message': '回调消息已接收并加入播放队列',
-            'event_type': request.event_type,
-            'queued': True
+            'message': '回调内容已提交到播报流程',
+            'event_type': request.event_type
         }
-        
     except Exception as e:
-        _logger.error(f"❌ 处理回调推送失败: {e}")
-        # 即使失败也返回 200，避免 functional_call 重试
+        _logger.error(f"❌ 注入播报流程失败: {e}")
         return {
             'status': 'error',
             'message': f'处理失败: {str(e)}',
-            'event_type': request.event_type,
-            'queued': False
+            'event_type': request.event_type
         }
 
 
