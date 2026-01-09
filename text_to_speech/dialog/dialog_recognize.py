@@ -1336,7 +1336,7 @@ class AudioStreamReader:
                             _logger.info(f"🔄 口语数字标准化: '{query_text_before}' → '{query_text}'")
                         
                         # 添加车辆编号
-                        query_text = self._add_vehile_num(query_text)
+                        # query_text = self._add_vehile_num(query_text)
                         
                         # 播放"请稍等"提示音
                         reply_qing_nin_shao_deng = self._synthesize_and_play_text(
@@ -1632,13 +1632,13 @@ class AudioStreamReader:
                 # 解析 JSON 响应（标准 JSON 格式）
                 response_data = response.json()
                 
-                # 验证响应格式并直接返回resultMsg
-                if "resultCode" in response_data and "resultMsg" in response_data:
-                    ai_reply = response_data["resultMsg"]  # 直接取字段
-                else:
-                    _logger.warning(f"⚠️ 服务器响应格式异常（缺少 resultCode/resultMsg）: {response_data}")
-                    return "服务器响应格式异常"
-            
+            # 验证响应格式并直接返回resultMsg
+            if "resultCode" in response_data and "resultMsg" in response_data:
+                ai_reply = response_data["resultMsg"]  # 直接取字段
+            else:
+                _logger.warning(f"⚠️ 服务器响应格式异常（缺少 resultCode/resultMsg）: {response_data}")
+                return "服务器响应格式异常"
+                
             # --- 统一的后续处理逻辑（清洗、记录、保存） ---
             # 使用配置驱动的文本处理器
             ai_reply = self.text_processor.process_text(ai_reply)
@@ -1652,8 +1652,8 @@ class AudioStreamReader:
                 _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:100]}...")
             
             # 保存用户请求和AI回复作为证据（推送消息也会被记录）
-            self._save_ai_response_text(text, ai_reply, str(response_data))
-            
+            # self._save_ai_response_text(text, ai_reply, str(response_data))
+                
             return ai_reply
         except requests.exceptions.ConnectionError as e:
             _logger.error(f"❌ 服务器连接失败: 无法连接到 {url} - {e}")

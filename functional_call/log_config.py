@@ -65,14 +65,14 @@ def setup_logging():
     console_handler.setFormatter(log_format)
     
     # 创建文件处理器（所有日志写入同一个文件）
-    log_file = _log_dir / f'all_main_{datetime.now().strftime("%Y%m%d")}.log'
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(log_format)
+    # log_file = _log_dir / f'all_main_{datetime.now().strftime("%Y%m%d")}.log'
+    # file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    # file_handler.setLevel(logging.DEBUG)
+    # file_handler.setFormatter(log_format)
     
     # 添加处理器到根记录器
     root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
+    # root_logger.addHandler(file_handler)
     # 添加上下文过滤器
     root_logger.addFilter(_ContextFilter())
     
