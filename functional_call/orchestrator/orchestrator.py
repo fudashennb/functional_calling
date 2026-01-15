@@ -18,11 +18,8 @@ from tools.robot_client import RobotClient
 from tools.nav_toolbox import NavToolbox
 from tools.action_toolbox import ActionToolbox
 from tools.status_toolbox import StatusToolbox
-from tools.diag_toolbox import DiagToolbox
 
-from agents.chat_agent import ChatAgent
 from agents.command_agent import CommandAgent
-from agents.diagnostics_agent import DiagnosticsAgent
 from agents.planner_agent import PlannerAgent
 from agents.status_agent import StatusAgent
 
@@ -55,7 +52,6 @@ class Orchestrator:
         self.nav_toolbox = NavToolbox(self.robot)
         self.action_toolbox = ActionToolbox(self.robot)
         self.status_toolbox = StatusToolbox(self.robot)
-        self.diag_toolbox = DiagToolbox(self.robot, settings.modbus_host, settings.modbus_port)
 
         self.llm = None
         if settings.dashscope_api_key:
@@ -66,9 +62,12 @@ class Orchestrator:
                 base_url=settings.qwen_base_url,
             )
         else:
-            logger.warning("未检测到 DASHSCOPE_API_KEY：LLM能力将不可用（仍可执行确定性指令）。")
+            logger.warning("未检测到 DASHSCOPE_API_KEY：LLM能力将不可用。")
 
-        self.router = IntentRouter(enable_local_models=settings.enable_local_router_models)
+        # 初始化路由（注入 LLM）
+        if self.llm is None:
+            raise RuntimeError("DashScope API Key 缺失，系统无法初始化 LLM 路由。")
+        self.router = IntentRouter(self.llm)
 
         # agents（注入特定的工具箱）
         self.command_agent = CommandAgent(
@@ -82,15 +81,8 @@ class Orchestrator:
         )
         self.status_agent = StatusAgent(
             status_toolbox=self.status_toolbox, 
+            llm=self.llm,
             system_prompt=self.prompts.get("status", "")
-        )
-        self.diagnostics_agent = DiagnosticsAgent(
-            diag_toolbox=self.diag_toolbox,
-            system_prompt=self.prompts.get("diagnostics", "")
-        )
-        self.chat_agent = ChatAgent(
-            llm=self.llm, 
-            system_prompt=self.prompts.get("chat", "")
         )
         self.planner_agent = PlannerAgent(
             event_bus=self.event_bus,
@@ -149,12 +141,8 @@ class Orchestrator:
                 out = self.planner_agent.handle(query=req.query, session=session)
             elif agent_name == "command":
                 out = self.command_agent.handle(query=req.query, session=session)
-            elif agent_name == "status":
-                out = self.status_agent.handle(query=req.query, session=session)
-            elif agent_name == "diagnostics":
-                out = self.diagnostics_agent.handle(query=req.query, session=session)
             else:
-                out = self.chat_agent.handle(query=req.query, session=session)
+                out = self.status_agent.handle(query=req.query, session=session)
 
             # assistant 记忆（仅对同步回答存）
             if out.kind == "reply":

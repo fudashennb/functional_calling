@@ -1394,7 +1394,7 @@ class AudioStreamReader:
             if recognized_text != recognized_text_before:
                 _logger.info(f"🔄 口语数字标准化: '{recognized_text_before}' → '{recognized_text}'")
             # 发送到AI服务器获取回复
-            recognized_text = self._add_vehile_num(recognized_text)
+            # recognized_text = self._add_vehile_num(recognized_text)
             reply_qing_nin_shao_deng = self._synthesize_and_play_text("music/qing_nin_shao_deng.wav", use_path=True)
             ai_response = self._request_server(self.dialog_ai_url, recognized_text)
             response = self._synthesize_and_play_text(ai_response)

@@ -20,15 +20,7 @@ class SystemState(Enum):
     SYS_STATE_TASK_NAV_FINDING_PATH = 0x06  # 导航正在寻路
     SYS_STATE_TASK_NAV_WAITING_FINISH = 0x07  # 正在等待到达目标位置
     SYS_STATE_TASK_NAV_WAITING_FINISH_SLOW = 0x08  # 检测到障碍,减速
-    SYS_STATE_TASK_NAV_REFINDING_PATH = 0x09  # 导航正在重新寻路
-    SYS_STATE_TASK_NAV_PAUSED = 0x0A  # 遇到障碍暂停运动
-    SYS_STATE_TASK_NAV_NO_WAY = 0x0B  # 无法抵达目标位置
-    SYS_STATE_TASK_PATH_NAV_INITIALING = 0x0E  # 正在初始化执行固定路径
-    SYS_STATE_TASK_PATH_WAITING_FINISH = 0x0F  # 正在等待固定路径执行结束
-    SYS_STATE_TASK_PATH_WAITING_FINISH_SLOW = 0x10  # 检测到障碍,减速前进
-    SYS_STATE_TASK_PATH_PAUSED = 0x11  # 遇到障碍暂停运动
-    SYS_STATE_TASK_NAV_NO_STATION = 0x12  # 无法检测到目标站点
-
+    SYS_STATE_TASK_NAV_REFINDING_PATH = 0x09  # 导航正在重新寻路h
 
 class LocationState(Enum):
     """枚举定位状态"""
