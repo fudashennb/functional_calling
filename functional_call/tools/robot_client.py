@@ -206,7 +206,7 @@ class RobotClient:
     def start_charge(
         self, 
         *, 
-        timeout_s: int = 60, 
+        timeout_s: int = 40, 
         emit: EventEmitter | None = None,
         stop_event: threading.Event | None = None
     ) -> None:
@@ -254,7 +254,7 @@ class RobotClient:
     def stop_charge(
         self, 
         *, 
-        timeout_s: int = 60, 
+        timeout_s: int = 40, 
         emit: EventEmitter | None = None,
         stop_event: threading.Event | None = None
     ) -> None:

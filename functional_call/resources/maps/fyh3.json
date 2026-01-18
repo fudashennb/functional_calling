@@ -1,0 +1,199 @@
+{
+ "meta": {
+  "zero_offset.x": 1669,
+  "zero_offset.y": 1499,
+  "size.x": 3178,
+  "size.y": 3007,
+  "resolution": 2,
+  "image_scale": [
+   1,
+   2,
+   4,
+   8
+  ],
+  "length_unit": "mm",
+  "angle_unit": "1/1000 rad",
+  "created_timestamp": 1768716734,
+  "modified_timestamp": 1768716950,
+  "version": "1.13.0"
+ },
+ "data": {
+  "area": [],
+  "noteArea": [],
+  "locationArea": [],
+  "node": [
+   {
+    "id": 1,
+    "desc": "",
+    "x": 578,
+    "y": -351,
+    "yaw": 0
+   },
+   {
+    "id": 2,
+    "desc": "",
+    "x": -658,
+    "y": -409,
+    "yaw": 0
+   }
+  ],
+  "tag": [],
+  "edge": [
+   {
+    "id": 1,
+    "sx": 578,
+    "sy": -351,
+    "ex": -658,
+    "ey": -409,
+    "s_node": 1,
+    "e_node": 2,
+    "cost": 1237.4,
+    "type": 1,
+    "desc": "",
+    "cx": 0,
+    "cy": 0,
+    "dx": 0,
+    "dy": 0,
+    "radius": 0,
+    "limit_v": 0,
+    "limit_w": 0,
+    "s_facing": 3188.4838218653417,
+    "e_facing": 3188.4838218653417,
+    "rotate_direction": 1,
+    "direction": 1,
+    "robot_direction": 1,
+    "param": 255,
+    "is_back_edge": false,
+    "user_define_properties": {},
+    "orientation": -0.017453292519943295,
+    "path_behavior": {
+     "type": 0,
+     "trigger_stage": 0,
+     "trigger_condition": {
+      "load_state": 0
+     }
+    }
+   },
+   {
+    "id": 2,
+    "sx": -658,
+    "sy": -409,
+    "ex": 578,
+    "ey": -351,
+    "s_node": 2,
+    "e_node": 1,
+    "cost": 1237.4,
+    "type": 1,
+    "desc": "",
+    "cx": 0,
+    "cy": 0,
+    "dx": 0,
+    "dy": 0,
+    "radius": 0,
+    "limit_v": 0,
+    "limit_w": 0,
+    "s_facing": 3188.4838218653417,
+    "e_facing": 3188.4838218653417,
+    "rotate_direction": 1,
+    "direction": 1,
+    "robot_direction": 2,
+    "param": 255,
+    "is_back_edge": true,
+    "user_define_properties": {},
+    "orientation": -0.017453292519943295,
+    "path_behavior": {
+     "type": 0,
+     "trigger_stage": 0,
+     "trigger_condition": {
+      "load_state": 0
+     }
+    }
+   }
+  ],
+  "station": [
+   {
+    "id": 1,
+    "type": 1,
+    "name": "充电站点",
+    "desc": "",
+    "pos.x": 578,
+    "pos.y": -351,
+    "pos.yaw": 3188.5,
+    "enter_pos.x": 0,
+    "enter_pos.y": 0,
+    "enter_pos.yaw": 0,
+    "exit_pos.x": 0,
+    "exit_pos.y": 0,
+    "exit_pos.yaw": 0,
+    "check_pos.x": 0,
+    "check_pos.y": 0,
+    "check_pos.yaw": 0,
+    "no_rotate": false,
+    "enter_backward": false,
+    "exit_backward": false,
+    "pos_dynamic": false,
+    "station_offset": 0,
+    "edge_id": 1,
+    "node_id": 1,
+    "user_define_properties": {},
+    "dmcode_id": "",
+    "pgv_offset.x": 0,
+    "pgv_offset.y": 0,
+    "pgv_offset.yaw": 0,
+    "param": 0,
+    "wareroomAreaId": 0,
+    "wareroomRegionId": 0,
+    "wareroomLocationRow": 0,
+    "wareroomLocationColumn": 0,
+    "wareroomLocationStorey": 0
+   },
+   {
+    "id": 2,
+    "type": 1,
+    "name": "站点2",
+    "desc": "",
+    "pos.x": -658,
+    "pos.y": -409,
+    "pos.yaw": 3188.4838,
+    "enter_pos.x": 0,
+    "enter_pos.y": 0,
+    "enter_pos.yaw": 0,
+    "exit_pos.x": 0,
+    "exit_pos.y": 0,
+    "exit_pos.yaw": 0,
+    "check_pos.x": 0,
+    "check_pos.y": 0,
+    "check_pos.yaw": 0,
+    "no_rotate": false,
+    "enter_backward": false,
+    "exit_backward": false,
+    "pos_dynamic": false,
+    "station_offset": 0,
+    "edge_id": 1,
+    "node_id": 2,
+    "user_define_properties": {},
+    "dmcode_id": "",
+    "pgv_offset.x": 0,
+    "pgv_offset.y": 0,
+    "pgv_offset.yaw": 0,
+    "param": 0,
+    "wareroomAreaId": 0,
+    "wareroomRegionId": 0,
+    "wareroomLocationRow": 0,
+    "wareroomLocationColumn": 0,
+    "wareroomLocationStorey": 0
+   }
+  ],
+  "dmcode": [],
+  "edgeGroup": [],
+  "feature": [],
+  "wareroom": {
+   "wareroomArea": [],
+   "wareroomRegion": []
+  }
+ },
+ "private": {
+  "cleanArea": [],
+  "redrawArea": []
+ }
+}

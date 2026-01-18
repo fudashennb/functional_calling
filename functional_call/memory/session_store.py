@@ -20,10 +20,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ConversationMessage:
-    role: str  # system/user/assistant
-    content: str
+    role: str  # system/user/assistant/tool
+    content: str | None = None
+    tool_calls: List[Dict[str, Any]] | None = None
+    tool_call_id: str | None = None
     ts: float = field(default_factory=lambda: time.time())
-
 
 @dataclass
 class SessionState:
@@ -32,10 +33,13 @@ class SessionState:
 
     # 对话上下文（仅保留最近N条）
     conversation: List[ConversationMessage] = field(default_factory=list)
-    max_conversation: int = 12
+    max_conversation: int = 20  # ReAct 循环消息较多，调大一点
 
     # 运行态
     active_request_id: str | None = None
+    
+    # 新增：当前关联的 Plan ID (用于 Flow 状态持久化)
+    active_plan_id: str | None = None
     
     # 外部引用的 JobManager，用于实现自愈检查
     _job_manager: Any = None 
@@ -44,8 +48,13 @@ class SessionState:
     robot_state_cache: Dict[str, Any] = field(default_factory=dict)
     robot_state_ts: float | None = None
 
-    def push_message(self, role: str, content: str) -> None:
-        self.conversation.append(ConversationMessage(role=role, content=content))
+    def push_message(self, role: str, content: str | None = None, tool_calls: List[Dict[str, Any]] | None = None, tool_call_id: str | None = None) -> None:
+        self.conversation.append(ConversationMessage(
+            role=role, 
+            content=content, 
+            tool_calls=tool_calls, 
+            tool_call_id=tool_call_id
+        ))
         if len(self.conversation) > self.max_conversation:
             self.conversation = self.conversation[-self.max_conversation :]
 

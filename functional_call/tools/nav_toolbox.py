@@ -27,7 +27,21 @@ class NavToolbox(BaseToolbox):
         """
         控制机器人移动到指定站点。
         """
-        self.robot.move_to_station(station_no, timeout_s=timeout_s, emit=emit, stop_event=stop_event)
+        # 增加心跳日志 (Heartbeat) - 在 Agent 层面已经由 EventBus 处理，但这里可以加强
+        # 注意：实际的心跳逻辑应该在 RobotClient 中实现，或者在这里包装。
+        # 这里假设 RobotClient.move_to_station 已经是阻塞的且有基本的重试逻辑。
+        # 我们可以在调用前后增加详细日志。
+        if emit:
+            emit("started", {"text": f"开始导航前往 {station_no} 号站点..."})
+            
+        try:
+            self.robot.move_to_station(station_no, timeout_s=timeout_s, emit=emit, stop_event=stop_event)
+            if emit:
+                emit("completed", {"text": f"已到达 {station_no} 号站点。"})
+        except Exception as e:
+            if emit:
+                emit("failed", {"text": f"导航失败: {e}"})
+            raise
 
     def get_prompt_fragment(self) -> str:
         return (

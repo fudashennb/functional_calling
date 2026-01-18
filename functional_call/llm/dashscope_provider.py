@@ -13,7 +13,27 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import requests
+import time
+from functools import wraps
 
+def retry_on_network_error(max_retries=3, delay=1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_err = None
+            for i in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (requests.RequestException, Exception) as e:
+                    last_err = e
+                    if i < max_retries - 1:
+                        logger.warning(f"网络请求失败，正在进行第 {i+1} 次重试: {e}")
+                        time.sleep(delay * (i + 1))
+                    else:
+                        break
+            raise last_err
+        return wrapper
+    return decorator
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +72,41 @@ class DashScopeLLMProvider:
     ) -> str:
         """
         调用 DashScope OpenAI-compatible Chat Completions。
+        """
+        result = self.call_with_tools(
+            messages=messages,
+            tools=None,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens
+        )
+        return result.get("content", "")
 
-        messages 格式示例：
-        [{"role":"system","content":"..."},{"role":"user","content":"..."}]
+    async def ask(self, prompt: str, temperature: float = 0.2) -> str:
+        """
+        简单的问答模式（异步封装）。
+        """
+        import asyncio
+        loop = asyncio.get_event_loop()
+        messages = [{"role": "user", "content": prompt}]
+        # 直接在线程池运行同步的 chat
+        return await loop.run_in_executor(
+            None, 
+            lambda: self.chat(messages=messages, temperature=temperature)
+        )
+
+    @retry_on_network_error(max_retries=3, delay=1)
+    def call_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: float = 0.2,
+        top_p: float = 0.8,
+        max_tokens: int = 1024,
+    ) -> Dict[str, Any]:
+        """
+        调用 DashScope，支持 tools 参数。
+        返回 Dict: {"content": str, "tool_calls": list | None}
         """
         url = self._base_url.rstrip("/") + "/chat/completions"
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -66,6 +118,10 @@ class DashScopeLLMProvider:
             "max_tokens": max_tokens,
             "stream": False,
         }
+        
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
 
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=self._timeout_s)
@@ -73,7 +129,6 @@ class DashScopeLLMProvider:
             raise DashScopeError(f"DashScope 请求失败：{e}") from e
 
         if resp.status_code != 200:
-            # 注意：不要在日志里打印 api_key
             snippet = resp.text[:500] if resp.text else ""
             raise DashScopeError(f"DashScope 返回异常状态码：{resp.status_code}，内容：{snippet}")
 
@@ -82,9 +137,7 @@ class DashScopeLLMProvider:
         except Exception as e:
             raise DashScopeError(f"DashScope 响应不是合法JSON：{resp.text[:500]}") from e
 
-        # OpenAI-compatible 返回结构：choices[0].message.content
         try:
-            # 兼容错误结构：{"error": {...}}
             if "error" in data:
                 err = data.get("error") or {}
                 raise DashScopeError(f"DashScope错误：{err.get('message') or err}")
@@ -92,11 +145,15 @@ class DashScopeLLMProvider:
             choices = data["choices"]
             if not choices:
                 raise KeyError("choices为空")
-            msg = choices[0].get("message") or {}
-            content = msg.get("content") or ""
-            if not content:
-                raise KeyError("content为空")
-            return content
+            
+            message = choices[0].get("message") or {}
+            content = message.get("content") or ""
+            tool_calls = message.get("tool_calls")
+            
+            return {
+                "content": content,
+                "tool_calls": tool_calls
+            }
         except Exception as e:
             raise DashScopeError(f"解析DashScope响应失败：{json.dumps(data, ensure_ascii=False)[:800]}") from e
 

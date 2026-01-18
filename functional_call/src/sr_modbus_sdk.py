@@ -288,22 +288,21 @@ class SRModbusSdk:
         """
         try:
             logger.info(f"正在写线圈: 地址={address}, 值={value}")
-        builder = BinaryPayloadBuilder(byteorder=Endian.Big)
-        if value:
-            builder.add_16bit_uint(0xFF00)
-                ret = self._client.write_coil(address, builder.to_coils(), slave=17)
-        else:
+            builder = BinaryPayloadBuilder(byteorder=Endian.Big)
+            if value:
+                builder.add_16bit_uint(0xFF00)
+            else:
                 builder.add_16bit_uint(0x0000)
-                ret = self._client.write_coil(address, builder.to_coils(), slave=17)
             
-            if hasattr(ret, 'isError') and ret.isError():
+            ret = self._client.write_coil(address, builder.to_coils(), slave=17)
+            
+            if hasattr(ret, "isError") and ret.isError():
                 logger.error(f"❌ 写线圈失败: 地址={address}, 错误={ret}")
                 raise RuntimeError(f"Modbus写操作失败: {ret}")
             logger.info(f"✅ 写线圈成功: 地址={address}")
         except Exception as e:
             logger.error(f"❌ 写线圈发生异常: 地址={address}, 异常={e}")
             raise
-
     def pause_task(self):
         """暂停运动"""
         self.write_coils_function(1)
@@ -492,12 +491,12 @@ class SRModbusSdk:
         """
         for i in range(3):  # 增加重试机制
             try:
-        ret = self._client.read_discrete_inputs(address, slave=17)
-                if hasattr(ret, 'isError') and ret.isError():
+                ret = self._client.read_discrete_inputs(address, slave=17)
+                if hasattr(ret, "isError") and ret.isError():
                     logger.warning(f"⚠️ 读取离散量失败 (地址 {address}), 错误: {ret}, 正在重试 ({i+1}/3)")
                     time.sleep(0.5)
                     continue
-                if not hasattr(ret, 'getBit'):
+                if not hasattr(ret, "getBit"):
                     logger.warning(f"⚠️ 读取结果异常 (类型 {type(ret)}), 正在重试 ({i+1}/3)")
                     time.sleep(0.5)
                     continue
@@ -509,7 +508,6 @@ class SRModbusSdk:
                 time.sleep(0.5)
         
         raise RuntimeError(f"❌ 无法读取离散量 (地址 {address}): Modbus 通信异常")
-
     def is_trigger_emergency(self) -> bool:
         """急停是否触发"""
         return self.read_discrete_function(10001)

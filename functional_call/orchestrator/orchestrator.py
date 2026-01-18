@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+import threading
+import asyncio
+import re
 from pathlib import Path
 
 from core.config import Settings
@@ -12,20 +15,16 @@ from core.language import LanguageService
 from core.models import VoiceQueryRequest, VoiceQueryResponse
 from core.voice_pusher import VoicePushNotifier
 from llm.dashscope_provider import DashScopeLLMProvider
+from app.flows.planning_flow import FlowFactory
+from app.tools.wrappers import initialize_tools
+import app.tools # 确保所有工具都被注册
 from memory.session_store import SessionStore
-from routing.router import IntentRouter
 from tools.robot_client import RobotClient
 from tools.nav_toolbox import NavToolbox
 from tools.action_toolbox import ActionToolbox
 from tools.status_toolbox import StatusToolbox
 
-from agents.command_agent import CommandAgent
-from agents.planner_agent import PlannerAgent
-from agents.status_agent import StatusAgent
-
-
 logger = logging.getLogger(__name__)
-
 
 class Orchestrator:
     def __init__(self, settings: Settings) -> None:
@@ -35,9 +34,6 @@ class Orchestrator:
         self.sessions = SessionStore()
         self.event_bus = EventBus(retention_max=settings.event_retention_max)
         self.job_manager = JobManager(self.event_bus)
-
-        # 提示词加载
-        self.prompts = self._load_prompts(settings.prompts_dir)
 
         # 语音推送器（主动推送任务事件到语音端）
         self.voice_pusher = VoicePushNotifier(
@@ -52,6 +48,9 @@ class Orchestrator:
         self.nav_toolbox = NavToolbox(self.robot)
         self.action_toolbox = ActionToolbox(self.robot)
         self.status_toolbox = StatusToolbox(self.robot)
+        
+        # Initialize global tool wrappers
+        initialize_tools(self.nav_toolbox, self.action_toolbox, self.status_toolbox)
 
         self.llm = None
         if settings.dashscope_api_key:
@@ -64,59 +63,13 @@ class Orchestrator:
         else:
             logger.warning("未检测到 DASHSCOPE_API_KEY：LLM能力将不可用。")
 
-        # 初始化路由（注入 LLM）
         if self.llm is None:
-            raise RuntimeError("DashScope API Key 缺失，系统无法初始化 LLM 路由。")
-        self.router = IntentRouter(self.llm)
-
-        # agents（注入特定的工具箱）
-        self.command_agent = CommandAgent(
-            event_bus=self.event_bus,
-            job_manager=self.job_manager,
-            llm=self.llm,
-            voice_pusher=self.voice_pusher,
-            system_prompt=self.prompts.get("command", ""),
-            nav_toolbox=self.nav_toolbox,
-            action_toolbox=self.action_toolbox,
-        )
-        self.status_agent = StatusAgent(
-            status_toolbox=self.status_toolbox, 
-            llm=self.llm,
-            system_prompt=self.prompts.get("status", "")
-        )
-        self.planner_agent = PlannerAgent(
-            event_bus=self.event_bus,
-            job_manager=self.job_manager,
-            command_agent=self.command_agent,
-            voice_pusher=self.voice_pusher,
-            system_prompt=self.prompts.get("planner", ""),
-            llm=self.llm,
-            nav_toolbox=self.nav_toolbox,
-            action_toolbox=self.action_toolbox,
-        )
-
-    def _load_prompts(self, prompts_dir: str) -> dict[str, str]:
-        """从目录加载所有 .txt 提示词文件"""
-        prompts = {}
-        path = Path(prompts_dir)
-        if not path.exists():
-            logger.warning(f"提示词目录不存在: {prompts_dir}")
-            return prompts
-        
-        for f in path.glob("*.txt"):
-            try:
-                prompts[f.stem] = f.read_text(encoding="utf-8")
-                logger.info(f"✅ 已加载提示词文件: {f.name}")
-            except Exception as e:
-                logger.error(f"❌ 加载提示词文件失败 {f.name}: {e}")
-        return prompts
+            raise RuntimeError("DashScope API Key 缺失，系统无法初始化。")
 
     def warm_up(self) -> None:
         """
-        预热所有耗时资源（本地模型、连接等）。
+        预热所有耗时资源。
         """
-        logger.info("正在执行系统预热：预加载本地路由模型...")
-        self.router.warm_up()
         logger.info("系统预热完成。")
 
     def handle_query(self, req: VoiceQueryRequest) -> tuple[int, VoiceQueryResponse]:
@@ -124,48 +77,65 @@ class Orchestrator:
         session_id = req.session_id or str(uuid.uuid4())
         request_id = str(uuid.uuid4())
 
+        # 清洗 query：移除常见的 ASR 模型标识符（如 <|en|>, <|zh|> 等）
+        query = re.sub(r"<\|.*?\|>", "", req.query).strip()
+
         with request_context(trace_id=trace_id, session_id=session_id, request_id=request_id):
-            logger.info(f"🎤 收到语音请求: \"{req.query}\" (session_id: {session_id})")
-            # 语言：显式优先，否则检测
-            lang = req.lang or self.lang_service.detect(req.query).lang
+            logger.info(f"🎤 收到语音请求: \"{query}\" (原始: \"{req.query}\", session_id: {session_id})")
+            
+            # 语言检测
+            lang = req.lang or self.lang_service.detect(query).lang
             session = self.sessions.get_or_create(session_id, lang=lang)
             session.lang = lang
+            session.active_request_id = request_id
+            
+            # 确保 session 引用 job_manager (用于自愈)
+            session._job_manager = self.job_manager
 
             # 记录对话
-            session.push_message("user", req.query)
+            session.push_message("user", query)
 
-            agent_name = self.router.route(query=req.query, session=session)
-            logger.info(f"路由选择Agent：{agent_name}")
+            # 创建 Planning Flow
+            flow = FlowFactory.create_flow("planning", self.llm, session, self.voice_pusher)
+            
+            # 202 立即响应，告知用户正在处理
+            # 注意：对于查询类任务，最好能同步返回。但 PlanningFlow 架构统一为异步/流式更自然。
+            # 这里我们统一走 JobManager 托管。
+            
+            self.event_bus.ensure_stream(request_id)
+            
+            def _flow_runner(stop_event: threading.Event) -> str | None:
+                # 在同步线程中运行异步 Flow
+                # JobManager 在线程中运行此函数
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(flow.execute(query, stop_event))
+                    return result
+                finally:
+                    loop.close()
+            
+            def _cleanup():
+                if session.active_request_id == request_id:
+                    session.active_request_id = None
+                logger.info(f"🧹 Flow 任务清理完成: {request_id}")
 
-            if agent_name == "planner":
-                out = self.planner_agent.handle(query=req.query, session=session)
-            elif agent_name == "command":
-                out = self.command_agent.handle(query=req.query, session=session)
-            else:
-                out = self.status_agent.handle(query=req.query, session=session)
-
-            # assistant 记忆（仅对同步回答存）
-            if out.kind == "reply":
-                session.push_message("assistant", out.speak_text)
-                resp = VoiceQueryResponse(
-                    resultCode=0,
-                    resultMsg=out.speak_text,
-                    session_id=session_id,
-                    request_id=None,
-                    status="completed",
-                    lang=lang,
-                )
-                return 200, resp
-
-            # 异步任务
+            self.job_manager.start(
+                request_id=request_id,
+                session_id=session_id,
+                runner=_flow_runner,
+                on_cleanup=_cleanup
+            )
+            
+            # 初始反馈语
+            first_response = "收到，正在思考中"
+            
             resp = VoiceQueryResponse(
                 resultCode=202,
-                resultMsg=out.speak_text,
+                resultMsg=first_response,
                 session_id=session_id,
-                request_id=out.request_id,
+                request_id=request_id,
                 status="accepted",
                 lang=lang,
             )
             return 202, resp
-
-
