@@ -149,8 +149,15 @@ class VoicePushNotifier:
         """
         内部推送方法（异步 + 失败不影响主流程）
         """
+        # 尝试从上下文中自动获取 request_id 和 session_id (如果未提供)
+        from core.context import get_request_id, get_session_id
+        if not request_id:
+            request_id = get_request_id() or ""
+        if not session_id:
+            session_id = get_session_id() or ""
+
         # 调试日志：无论是否启用推送，都在日志中记录内容
-        logger.info(f"📢 [语音推送] 类型={event_type}, 内容=\"{speak_text}\" (启用状态={self.enabled})")
+        logger.info(f"📢 [语音推送] 类型={event_type}, 内容=\"{speak_text}\" (启用状态={self.enabled}, req_id={request_id}, sess_id={session_id})")
 
         if not self.enabled:
             return
@@ -197,25 +204,28 @@ class VoicePushNotifier:
                     timeout=self.timeout_s,
                 )
                 if resp.status_code == 200:
-                    logger.info(f"✅ 语音推送成功: event_type={event_type}")
+                    logger.info(f"✅ 语音推送成功 (HTTP 200): event_type={event_type}, req_id={request_id}")
                     return
                 else:
-                    logger.warning(f"⚠️ 语音推送失败（HTTP {resp.status_code}），准备重试")
+                    logger.warning(f"⚠️ 语音推送失败 (HTTP {resp.status_code}): {resp.text[:100]}, 准备重试...")
             except Exception as e:
-                logger.warning(f"⚠️ 语音推送失败（{e}），准备重试")
+                logger.warning(f"⚠️ 语音推送异常 ({type(e).__name__}): {e}, 准备重试...")
 
             # 重试一次（避免网络抖动）
             import time
             time.sleep(0.5)
-            resp = requests.post(
-                self.push_url,
-                json=payload,
-                timeout=self.timeout_s,
-            )
-            if resp.status_code == 200:
-                logger.info(f"✅ 语音推送成功（重试后）: event_type={event_type}")
-            else:
-                logger.error(f"❌ 语音推送最终失败（HTTP {resp.status_code}）: event_type={event_type}")
+            try:
+                resp = requests.post(
+                    self.push_url,
+                    json=payload,
+                    timeout=self.timeout_s,
+                )
+                if resp.status_code == 200:
+                    logger.info(f"✅ 语音推送重试成功 (HTTP 200): event_type={event_type}")
+                else:
+                    logger.error(f"❌ 语音推送重试失败 (HTTP {resp.status_code}): event_type={event_type}")
+            except Exception as e:
+                logger.error(f"❌ 语音推送重试异常 ({type(e).__name__}): {e}")
 
         except Exception as e:
             logger.error(f"❌ 语音推送异常: {e}")

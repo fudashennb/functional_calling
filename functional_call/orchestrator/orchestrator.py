@@ -75,13 +75,20 @@ class Orchestrator:
     def handle_query(self, req: VoiceQueryRequest) -> tuple[int, VoiceQueryResponse]:
         trace_id = str(uuid.uuid4())
         session_id = req.session_id or str(uuid.uuid4())
-        request_id = str(uuid.uuid4())
+        # 优先使用传入的 request_id，如果为空则生成新的
+        request_id = req.request_id if req.request_id else str(uuid.uuid4())
+
+        logger.info(f"DEBUG: orchestrator.handle_query 收到请求 - req_id={req.request_id}, sess_id={req.session_id} -> 选定 request_id={request_id}, session_id={session_id}")
 
         # 清洗 query：移除常见的 ASR 模型标识符（如 <|en|>, <|zh|> 等）
         query = re.sub(r"<\|.*?\|>", "", req.query).strip()
 
         with request_context(trace_id=trace_id, session_id=session_id, request_id=request_id):
-            logger.info(f"🎤 收到语音请求: \"{query}\" (原始: \"{req.query}\", session_id: {session_id})")
+            logger.info(f"🎤 收到语音请求: \"{query}\" (原始: \"{req.query}\", session_id: {session_id}, request_id: {request_id})")
+            
+            # 确认上下文变量已生效
+            from core.context import get_request_id, get_session_id
+            logger.info(f"DEBUG: 上下文变量检查 - ctx_req_id={get_request_id()}, ctx_sess_id={get_session_id()}")
             
             # 语言检测
             lang = req.lang or self.lang_service.detect(query).lang
@@ -105,15 +112,18 @@ class Orchestrator:
             self.event_bus.ensure_stream(request_id)
             
             def _flow_runner(stop_event: threading.Event) -> str | None:
-                # 在同步线程中运行异步 Flow
-                # JobManager 在线程中运行此函数
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(flow.execute(query, stop_event))
-                    return result
-                finally:
-                    loop.close()
+                # 在新线程中必须重新建立上下文，否则 contextvars 会丢失
+                with request_context(trace_id=trace_id, session_id=session_id, request_id=request_id):
+                    logger.info(f"DEBUG: 线程内上下文已重建 - req_id={request_id}")
+                    # 在同步线程中运行异步 Flow
+                    # JobManager 在线程中运行此函数
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        result = loop.run_until_complete(flow.execute(query, stop_event))
+                        return result
+                    finally:
+                        loop.close()
             
             def _cleanup():
                 if session.active_request_id == request_id:

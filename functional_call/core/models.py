@@ -13,6 +13,7 @@ class VoiceQueryRequest(BaseModel):
     # 你的语音系统目前只会发 query，我们兼容扩展字段
     query: str = Field(..., description="用户的文本指令（来自语音转文本）")
     session_id: str | None = Field(default=None, description="会话ID（建议由客户端维持）")
+    request_id: str | None = Field(default=None, description="可选：外部关联请求ID")
     callback_url: str | None = Field(default=None, description="可选：事件回调URL")
     lang: str | None = Field(default=None, description="可选：zh/en，缺省自动检测")
 

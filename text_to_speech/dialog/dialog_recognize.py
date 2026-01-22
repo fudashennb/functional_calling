@@ -1274,7 +1274,7 @@ class AudioStreamReader:
             # 确保线程完全停止
             self.stream_active = False
 
-    def handle_recognized_text(self, recognized_text: str, audio_data: AudioData):
+    def handle_recognized_text(self, recognized_text: str, audio_data: AudioData, ext_id: str = "", custom_session_id: str = ""):
         if self._is_stop_conversation_word(recognized_text):
             # 检测到停止对话词 - 优先级高于唤醒词
             if self.is_in_conversation():
@@ -1335,15 +1335,12 @@ class AudioStreamReader:
                         if query_text != query_text_before:
                             _logger.info(f"🔄 口语数字标准化: '{query_text_before}' → '{query_text}'")
                         
-                        # 添加车辆编号
-                        # query_text = self._add_vehile_num(query_text)
-                        
                         # 播放"请稍等"提示音
                         reply_qing_nin_shao_deng = self._synthesize_and_play_text(
                             "music/qing_nin_shao_deng.wav", use_path=True)
                         
-                        # 发送问题给AI
-                        ai_response = self._request_server(self.dialog_ai_url, query_text)
+                        # 发送问题给AI (透传 ext_id 和 custom_session_id)
+                        ai_response = self._request_server(self.dialog_ai_url, query_text, ext_id=ext_id, custom_session_id=custom_session_id)
                         response = self._synthesize_and_play_text(ai_response)
                         
                         if response:
@@ -1380,12 +1377,6 @@ class AudioStreamReader:
                 return
             if conversation_playing_status['is_playing_now'] == False and (conversation_playing_status["last_play_end_time"] - audio_data.vad_start_time) / audio_data.vad_duration > 0.3:
                 return           
-            # self.future_play_end_time = conversation_playing_status['last_play_end_time']
-            # _logger.info(f"🔊 对话播放结束时间: {self.future_play_end_time}")
-            # if (self.future_play_end_time - audio_data.vad_start_time) / audio_data.vad_duration > 0.5:
-            #     _logger.warning(
-            #         f"❌ 识别为播放语音，不进行播放,{self.future_play_end_time - audio_data.vad_start_time},{audio_data.vad_duration}")
-            #     return
             
             # ========== 口语数字标准化（新增）==========
             # 将口语数字转换为标准数字，如"幺"→"一"、"洞"→"零"等
@@ -1394,9 +1385,8 @@ class AudioStreamReader:
             if recognized_text != recognized_text_before:
                 _logger.info(f"🔄 口语数字标准化: '{recognized_text_before}' → '{recognized_text}'")
             # 发送到AI服务器获取回复
-            # recognized_text = self._add_vehile_num(recognized_text)
             reply_qing_nin_shao_deng = self._synthesize_and_play_text("music/qing_nin_shao_deng.wav", use_path=True)
-            ai_response = self._request_server(self.dialog_ai_url, recognized_text)
+            ai_response = self._request_server(self.dialog_ai_url, recognized_text, ext_id=ext_id, custom_session_id=custom_session_id)
             response = self._synthesize_and_play_text(ai_response)
             
             if response:
@@ -1598,13 +1588,15 @@ class AudioStreamReader:
         text = '车辆' + self.nick_name + ',' + text
         return text
 
-    def _request_server(self, url: str, text: str):
+    def _request_server(self, url: str, text: str, ext_id: str = "", custom_session_id: str = ""):
         """
         向服务器发送查询请求并返回响应
 
         Args:
             url: 服务器URL。如果为 None，则视为推送语音注入，直接返回处理后的原文本。
             text: 查询文本或推送文本
+            ext_id: 外部关联 ID (msg_id)
+            custom_session_id: 自定义会话 ID (chat_id)
 
         Returns:
             str: 服务器响应的resultMsg内容，或处理后的推送文本
@@ -1616,9 +1608,11 @@ class AudioStreamReader:
                 response_data = {"resultCode": 0, "resultMsg": text, "source": "external_push"}
                 _logger.info(f"📥 接收到推送语音内容，正在融入主流程处理...")
             else:
-                # 构造请求数据
+                # 构造请求数据 (增加透传参数)
                 request_data = {
-                    "query": text
+                    "query": text,
+                    "session_id": custom_session_id or None, # 如果没传则由服务端生成
+                    "request_id": ext_id # 确保传递非空的 request_id
                 }
                 # 发送POST请求
                 response = requests.post(
@@ -1642,15 +1636,15 @@ class AudioStreamReader:
             # --- 统一的后续处理逻辑（清洗、记录、保存） ---
             # 使用配置驱动的文本处理器
             ai_reply = self.text_processor.process_text(ai_reply)
-            
+                
             # 清理多余的空格
             import re
             ai_reply = re.sub(r'\s+', ' ', ai_reply).strip()
-            
+                
             # 记录成功日志
             if url:
                 _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:100]}...")
-            
+                
             # 保存用户请求和AI回复作为证据（推送消息也会被记录）
             # self._save_ai_response_text(text, ai_reply, str(response_data))
                 

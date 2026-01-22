@@ -12,8 +12,16 @@ import sys
 from pathlib import Path
 import subprocess
 import random
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+
+# ============================================================================
+# 全局流式队列：用于将机器人播报实时推送到外部（如飞书）
+# Key: msg_id (由外部传入)
+# Value: asyncio.Queue
+# ============================================================================
+STREAM_QUEUES: Dict[str, asyncio.Queue] = {}
 
 # 添加项目根目录到Python路径
 project_root = Path(__file__).parent.parent
@@ -47,12 +55,14 @@ class VoiceCallbackRequest(BaseModel):
     - speak_text: 可直接播报的中文文本
     - request_id: 任务ID（可选）
     - session_id: 会话ID（可选）
+    - ext_msg_id: 外部关联ID（如飞书消息ID，可选）
     - data: 额外结构化数据（可选）
     """
     event_type: str  # plan/fault/completed/failed
     speak_text: str  # 可直接播报的中文文本
     request_id: str = ""
     session_id: str = ""
+    ext_msg_id: str = ""
     data: Dict[str, Any] = {}
 
 audio_player = None
@@ -589,15 +599,30 @@ async def resume_music():
 async def voice_callback(request: VoiceCallbackRequest):
     """
     接收任务事件回调，并通过对话流程（_request_server -> _synthesize_and_play_text）注入播报
+    同时将播报内容同步到外部流式队列（如飞书）
     """
     try:
-        _logger.info(f"📥 收到回调推送: {request.speak_text}")
+        # 统一使用 request_id
+        target_id = request.request_id or request.ext_msg_id
+        _logger.info(f"📥 收到回调推送: {request.speak_text} (event={request.event_type}, target_id={target_id})")
         
-        # 定义后台执行逻辑，融入现有对话流水线
+        # 1. 优先推送给外部流（如飞书）
+        if target_id and target_id in STREAM_QUEUES:
+            _logger.info(f"📤 正在转发到流队列 [{target_id}]: {request.speak_text}")
+            await STREAM_QUEUES[target_id].put(request.speak_text)
+            
+            # 如果是结束类事件，发送特殊结束标记
+            if request.event_type in ["completed", "failed"]:
+                _logger.info(f"🏁 收到终结事件，发送 [__END__] 到队列: {target_id}")
+                await STREAM_QUEUES[target_id].put("__END__")
+        else:
+            _logger.debug(f"ℹ️ 流队列不存在或已关闭: {target_id}")
+
+        # 2. 定义后台执行逻辑，融入机器人本地语音播报流程
         def run_in_pipeline():
-            # 1. 融入文本清洗和日志记录流程
+            # 融入文本清洗和日志记录流程
             ai_response = conversation_reader._request_server(None, request.speak_text)
-            # 2. 调用现有播放流程
+            # 调用现有播放流程
             conversation_reader._synthesize_and_play_text(ai_response)
 
         # 异步执行，不阻塞回调发送方
@@ -605,16 +630,81 @@ async def voice_callback(request: VoiceCallbackRequest):
         
         return {
             'status': 'success',
-            'message': '回调内容已提交到播报流程',
+            'message': '内容已分发',
             'event_type': request.event_type
         }
     except Exception as e:
-        _logger.error(f"❌ 注入播报流程失败: {e}")
-        return {
-            'status': 'error',
-            'message': f'处理失败: {str(e)}',
-            'event_type': request.event_type
-        }
+        _logger.error(f"❌ 分发回调失败: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+class InjectStreamRequest(BaseModel):
+    text: str
+    session_id: str
+    msg_id: str
+
+@app.post('/v1/voice/inject_stream')
+async def inject_stream(request: InjectStreamRequest):
+    """
+    外部流式指令注入。
+    接收飞书文字，触发逻辑，并持续返回机器人产生的所有播报。
+    """
+    msg_id = request.msg_id
+    # 1. 创建该请求的专属分发队列
+    queue = asyncio.Queue()
+    STREAM_QUEUES[msg_id] = queue
+    
+    _logger.info(f"📩 收到外部流式注入: {request.text} (msg_id: {msg_id})")
+
+    async def event_generator():
+        _logger.info(f"🚀 [{msg_id}] 流式生成器启动")
+        try:
+            # A. 伪造 AudioData 状态
+            from dialog.dialog_recognize import AudioStreamReader
+            mock_audio = AudioStreamReader.AudioData(
+                audio_data=None, 
+                vad_type="speech", 
+                vad_duration=1.0, 
+                vad_start_time=time.time(), 
+                vad_end_time=time.time()
+            )
+
+            # B. 启动后台逻辑处理
+            def process_logic():
+                _logger.info(f"🧠 [{msg_id}] 启动后台处理逻辑: text='{request.text[:20]}...'")
+                conversation_reader.handle_recognized_text(
+                    request.text, 
+                    mock_audio, 
+                    ext_id=msg_id,
+                    custom_session_id=request.session_id
+                )
+            
+            threading.Thread(target=process_logic, daemon=True).start()
+
+            # C. 持续监听队列并返回内容
+            timeout_limit = 120 
+            start_wait = time.time()
+            
+            while time.time() - start_wait < timeout_limit:
+                try:
+                    speak_text = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    
+                    if speak_text == "__END__":
+                        _logger.info(f"🛑 [{msg_id}] 收到结束标记，发送 [DONE] 并关闭流")
+                        yield "[DONE]\n"
+                        break
+                        
+                    _logger.info(f"📡 [{msg_id}] 发送数据到客户端: {speak_text}")
+                    yield speak_text + "\n"
+                except asyncio.TimeoutError:
+                    # 检查是否还有活跃的线程在处理，如果没有且队列为空，可能需要异常退出
+                    continue
+        except Exception as e:
+            _logger.error(f"💥 [{msg_id}] 流式生成器异常: {e}")
+        finally:
+            STREAM_QUEUES.pop(msg_id, None)
+            _logger.info(f"🏁 [{msg_id}] 流式响应结束，已清理队列")
+
+    return StreamingResponse(event_generator(), media_type="text/plain")
 
 
 if __name__ == '__main__':

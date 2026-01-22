@@ -38,6 +38,9 @@ class PlanningFlow:
         执行流程：规划 -> 分发 -> 循环。
         """
         logger.info(f"开始 PlanningFlow，输入任务: {input_text}")
+        # 记录当前的 ID 状态
+        from core.context import get_request_id, get_session_id
+        logger.info(f"DEBUG: PlanningFlow.execute 入口 - ctx_req_id={get_request_id()}, ctx_sess_id={get_session_id()}, session.session_id={self.session.session_id}")
         
         # 1. 初始规划 (宏观步骤 1)
         # 计划 ID 与会话绑定或新建
@@ -62,7 +65,11 @@ class PlanningFlow:
                 # 依然走总结逻辑，把 Manus 的一大堆解释浓缩成一句短语音
                 fail_msg = await self.manus_agent.summarize_task(input_text, [manus_result])
                 if self.voice_pusher:
-                    self.voice_pusher.push_failed(fail_msg, session_id=self.session.session_id)
+                    self.voice_pusher.push_failed(
+                        fail_msg, 
+                        session_id=self.session.session_id,
+                        request_id=self.session.active_request_id
+                    )
                 return fail_msg
         
         # 2. 宏观循环 (分发步骤)
@@ -103,7 +110,11 @@ class PlanningFlow:
                 final_summary = await self.manus_agent.summarize_task(input_text, all_results)
                 
                 if self.voice_pusher:
-                    self.voice_pusher.push_completed(final_summary, session_id=self.session.session_id)
+                    self.voice_pusher.push_completed(
+                        final_summary, 
+                        session_id=self.session.session_id,
+                        request_id=self.session.active_request_id
+                    )
                 
                 return final_summary
             
@@ -113,7 +124,11 @@ class PlanningFlow:
             # 【新增】任务启动播报：清洗数据，只推文字描述
             if self.voice_pusher:
                 clean_desc = self._extract_text(step_desc)
-                self.voice_pusher.push_plan(clean_desc, session_id=self.session.session_id)
+                self.voice_pusher.push_plan(
+                    clean_desc, 
+                    session_id=self.session.session_id,
+                    request_id=self.session.active_request_id
+                )
 
             # 更新状态为“进行中”
             statuses[next_step_idx] = "in_progress"
@@ -175,14 +190,17 @@ class PlanningFlow:
         if not raw_content:
             return ""
         
-        text = ""
+        val = ""
         # 1. 处理字典类型 (增加对 'step' 键的识别)
         if isinstance(raw_content, dict):
-            text = (raw_content.get("step") or 
-                    raw_content.get("description") or 
-                    raw_content.get("message") or 
-                    raw_content.get("title") or 
-                    str(raw_content))
+            # 优先取描述性强的键，如果 'step' 是数字则跳过
+            step_val = raw_content.get("step")
+            val = (raw_content.get("description") or 
+                   raw_content.get("action") or 
+                   (str(step_val) if isinstance(step_val, str) else None) or
+                   raw_content.get("message") or 
+                   raw_content.get("title") or 
+                   str(raw_content))
         
         # 2. 处理字符串（尝试解析 JSON/Dict）
         elif isinstance(raw_content, str):
@@ -196,19 +214,24 @@ class PlanningFlow:
                         data = ast.literal_eval(clean_text)
                     
                     if isinstance(data, dict):
-                        text = (data.get("step") or 
-                                data.get("description") or 
-                                data.get("message") or 
-                                data.get("title") or 
-                                clean_text)
+                        step_val = data.get("step")
+                        val = (data.get("description") or 
+                               data.get("action") or 
+                               (str(step_val) if isinstance(step_val, str) else None) or
+                               data.get("message") or 
+                               data.get("title") or 
+                               clean_text)
                     else:
-                        text = clean_text
+                        val = clean_text
                 except:
-                    text = clean_text
+                    val = clean_text
             else:
-                text = clean_text
+                val = clean_text
         else:
-            text = str(raw_content)
+            val = str(raw_content)
+
+        # 确保最终是字符串
+        text = str(val)
 
         # 3. 终极清洗：只保留中文、数字和基本标点，剔除所有英文字母和特殊符号
         # 移除英文字母
