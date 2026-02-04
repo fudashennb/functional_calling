@@ -58,6 +58,17 @@ class SessionState:
         if len(self.conversation) > self.max_conversation:
             self.conversation = self.conversation[-self.max_conversation :]
 
+    def prune_history(self) -> None:
+        """
+        任务结束时的清洗：
+        清空所有上下文，确保下一次任务是全新开始。
+        这能极大减少 LLM 的困惑，并节省 Token。
+        """
+        if not self.conversation:
+            return
+        # 清空历史，因为状态通过 System Prompt 注入，无需依赖历史记忆
+        self.conversation.clear()
+
     def is_busy(self) -> bool:
         """
         判断当前会话是否处于任务执行中。

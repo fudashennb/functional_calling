@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+import requests
 from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
@@ -180,53 +182,36 @@ class VoicePushNotifier:
         data: Dict[str, Any],
     ) -> None:
         """
-        实际推送逻辑（带重试）
+        实际推送逻辑（支持多目标推送 + 带指数退避重试）
         """
-        try:
-            import requests
+        payload = {
+            "event_type": event_type,
+            "speak_text": speak_text,
+            "request_id": request_id,
+            "session_id": session_id,
+            "data": data,
+        }
 
-            payload = {
-                "event_type": event_type,
-                "speak_text": speak_text,
-                "request_id": request_id,
-                "session_id": session_id,
-                "data": data,
-            }
-
-            # 打印完整 payload 方便调试
-            logger.info(f"📤 推送语音回调 Payload: {payload}")
-
-            # 第一次尝试
-            try:
-                resp = requests.post(
-                    self.push_url,
-                    json=payload,
-                    timeout=self.timeout_s,
-                )
-                if resp.status_code == 200:
-                    logger.info(f"✅ 语音推送成功 (HTTP 200): event_type={event_type}, req_id={request_id}")
-                    return
+        # 解析多目标 URL
+        targets = [t.strip() for t in (self.push_url or "").split(",") if t.strip()]
+        
+        for url in targets:
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    if attempt == 0:
+                        logger.info(f"📤 推送语音回调 (Target: {url}): {event_type}")
+                
+                    resp = requests.post(url, json=payload, timeout=self.timeout_s)
+                    if resp.status_code == 200:
+                        logger.info(f"✅ 推送成功: {url}")
+                        break
+                    logger.warning(f"⚠️ 推送失败 ({url}, HTTP {resp.status_code}): {resp.text[:50]}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 推送异常 ({url}, {type(e).__name__}): {e}")
+            
+                if attempt < max_retries - 1:
+                    time.sleep((attempt + 1) * 2)
                 else:
-                    logger.warning(f"⚠️ 语音推送失败 (HTTP {resp.status_code}): {resp.text[:100]}, 准备重试...")
-            except Exception as e:
-                logger.warning(f"⚠️ 语音推送异常 ({type(e).__name__}): {e}, 准备重试...")
-
-            # 重试一次（避免网络抖动）
-            import time
-            time.sleep(0.5)
-            try:
-                resp = requests.post(
-                    self.push_url,
-                    json=payload,
-                    timeout=self.timeout_s,
-                )
-                if resp.status_code == 200:
-                    logger.info(f"✅ 语音推送重试成功 (HTTP 200): event_type={event_type}")
-                else:
-                    logger.error(f"❌ 语音推送重试失败 (HTTP {resp.status_code}): event_type={event_type}")
-            except Exception as e:
-                logger.error(f"❌ 语音推送重试异常 ({type(e).__name__}): {e}")
-
-        except Exception as e:
-            logger.error(f"❌ 语音推送异常: {e}")
+                    logger.error(f"❌ 目标推送彻底失败: {url}")
 

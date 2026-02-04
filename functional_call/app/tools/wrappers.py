@@ -33,6 +33,54 @@ async def move_to_station(station_no: int, timeout_s: int = 120, emit: 'EventEmi
         logger.error(f"导航失败: {e}")
         return f"错误：导航失败。{str(e)}"
 
+@ToolRegistry.register(name="lift_up", description="顶升货物。")
+async def lift_up(height: int = 50, timeout_s: int = 60, emit: 'EventEmitter' = None, stop_event: 'threading.Event' = None):
+    if not _action_toolbox or not _status_toolbox:
+        return "错误：工具未初始化。"
+    try:
+        # 1. 动作前校验：确保当前不在移动中
+        status = _status_toolbox.get_movement_task_info()
+        if "MT_RUNNING" in str(status.get("state", "")):
+            return "错误：机器人正在移动中，无法执行顶升。"
+
+        # 2. 执行顶升 (action_id=4, param1=11, param2=height)
+        _action_toolbox.execute_action(4, 11, height, timeout_s=timeout_s, emit=emit, stop_event=stop_event)
+        
+        # 3. 动作后校验：确认动作任务已完成
+        action_status = _status_toolbox.get_action_task_info()
+        if "AT_FINISHED" in str(action_status.get("state", "")):
+            return f"顶升成功 (高度 {height})。"
+        else:
+            return f"顶升动作已下发，但当前状态为 {action_status.get('state')}，请确认硬件是否到位。"
+            
+    except Exception as e:
+        logger.error(f"顶升失败: {e}")
+        return f"错误：顶升失败。{str(e)}"
+
+@ToolRegistry.register(name="put_down", description="降下货物。")
+async def put_down(timeout_s: int = 60, emit: 'EventEmitter' = None, stop_event: 'threading.Event' = None):
+    if not _action_toolbox or not _status_toolbox:
+        return "错误：工具未初始化。"
+    try:
+        # 1. 动作前校验
+        status = _status_toolbox.get_movement_task_info()
+        if "MT_RUNNING" in str(status.get("state", "")):
+            return "错误：机器人正在移动中，无法执行下降。"
+
+        # 2. 执行下降 (action_id=4, param1=11, param2=0)
+        _action_toolbox.execute_action(4, 11, 0, timeout_s=timeout_s, emit=emit, stop_event=stop_event)
+        
+        # 3. 动作后校验
+        action_status = _status_toolbox.get_action_task_info()
+        if "AT_FINISHED" in str(action_status.get("state", "")):
+            return "降下成功。"
+        else:
+            return f"下降动作已下发，但当前状态为 {action_status.get('state')}，请确认硬件是否到位。"
+
+    except Exception as e:
+        logger.error(f"降下失败: {e}")
+        return f"错误：降下失败。{str(e)}"
+
 @ToolRegistry.register(name="execute_action", description="执行特定的硬件动作（如顶升、降下）。")
 async def execute_action(action_id: int, param1: int, param2: int, timeout_s: int = 60, emit: 'EventEmitter' = None, stop_event: 'threading.Event' = None):
     if not _action_toolbox:

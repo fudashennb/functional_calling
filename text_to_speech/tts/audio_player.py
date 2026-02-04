@@ -58,6 +58,7 @@ import subprocess
 import threading
 import asyncio
 import queue
+import time
 from typing import List, Optional  # noqa: UP035, UP006
 from enum import Enum
 from dataclasses import dataclass
@@ -875,92 +876,69 @@ class AudioPlayer:
 
     def play_text(self, text: str, volume: float = 1.0):
         """播放文本内容，支持分段播放和边播放边生成"""
-        # 主播放逻辑
+        if not text or not text.strip():
+            return
+
         try:
             self.set_volume(volume)
             # 分段文本
             text_segments = self.split_text_by_words(text)
-            logger.info(f'文本已分为 {len(text_segments)} 段')
-
-            # 使用线程池实现并行处理
-            import concurrent.futures
-            import threading
+            logger.info(f'文本将分为 {len(text_segments)} 段播放')
 
             # 创建音频队列
             audio_queue = queue.Queue()
             stop_event = threading.Event()
 
-            # 启动并行线程
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as self.executor:
-                # 提交生成和播放任务
-                generate_future = self.executor.submit(
-                    self._generate_audio_worker, text_segments, volume, audio_queue, stop_event)
-                play_future = self.executor.submit(
-                    self._play_audio_worker, text_segments, volume, audio_queue, stop_event)
+            # 启动音频生成线程 (Producer)
+            gen_thread = threading.Thread(
+                target=self._generate_audio_worker, 
+                args=(text_segments, volume, audio_queue, stop_event),
+                daemon=True
+            )
+            gen_thread.start()
 
-                # 立即返回，不等待任务完成
-                logger.info('文本播放任务已启动，在后台进行')
+            # 启动音频播放线程 (Consumer)
+            play_thread = threading.Thread(
+                target=self._play_audio_worker,
+                args=(text_segments, volume, audio_queue, stop_event),
+                daemon=True
+            )
+            play_thread.start()
 
-            logger.info('！！！！！！！！！！！！文本播放完成')
-            import time
-            current_time = time.time()
-            logger.info(f'⏰ [超时测试] 文本播放完成时间戳: {current_time:.3f} (时间: {time.strftime("%H:%M:%S", time.localtime(current_time))})')
+            logger.info('文本播放任务已转入后台并行处理')
 
         except Exception as e:
-            logger.error(f'播放文本时发生错误: {e}')
+            logger.error(f'启动播放文本任务失败: {e}')
             raise RuntimeError(f'播放文本失败: {e}') from e
 
-    def _process_audio_file(self, audio_file, volume):
-        """处理音频文件（在线程中执行）"""
-        try:
-            temp_audio_file = tempfile.NamedTemporaryFile(
-                suffix='.wav', delete=False)
-            sample_rate = 22050
-            audio_amplified = self.set_play_speed_and_volume(
-                audio_file, playback_speed=0.95, volume=volume)
-
-            audio_int16 = (audio_amplified * 32767).astype(np.int16)
-            with wave.open(temp_audio_file, 'w') as wav_file:
-                wav_file.setnchannels(1)  # 单声道
-                wav_file.setsampwidth(2)  # 16位
-                wav_file.setframerate(sample_rate)
-                wav_file.writeframes(audio_int16.tobytes())
-
-            audio_file_name = temp_audio_file.name
-            temp_audio_file.close()
-            return audio_file_name
-        except Exception as e:
-            logger.error(f'处理音频文件时发生错误: {e}')
-            return None
-
     def _play_audio_file_sync(self, audio_file_name, volume):
-        """同步播放音频文件"""
+        """同步播放音频文件并确保清理"""
         try:
-            logger.info(f'播放音频: {audio_file_name}')
-            # 播放音频文件（非阻塞）
+            # 增加物理文件就绪检查，应对高并发下的 OS 写入延迟
+            max_checks = 5
+            for i in range(max_checks):
+                if os.path.exists(audio_file_name) and os.path.getsize(audio_file_name) > 0:
+                    break
+                logger.debug(f"⏳ 等待音频文件就绪 ({i+1}/{max_checks}): {audio_file_name}")
+                time.sleep(0.05)
+            else:
+                logger.error(f"❌ 播放终止：音频文件未就绪: {audio_file_name}")
+                return
+
+            logger.info(f'正在播放音频片段: {audio_file_name}')
+            # play_file 内部是阻塞的（调用了 current_process.wait()）
             success = self.play_file(audio_file_name, volume)
 
-            if success:
-                # 使用后台线程来等待播放完成并清理文件
-                import threading
-
-                def cleanup_after_playback():
-                    try:
-                        # 等待播放进程完成
-                        if self.current_process:
-                            self.current_process.wait()
-                        # 播放完成后清理临时文件
-                        import os
-                        os.unlink(audio_file_name)
-                        logger.info(f'临时文件已清理: {audio_file_name}')
-                    except Exception as e:
-                        logger.error(f'清理临时文件失败: {e}')
-                cleanup_after_playback()
-            else:
-                logger.warning(f'播放失败: {audio_file_name}')
+            # 播放结束后清理临时文件
+            try:
+                if os.path.exists(audio_file_name):
+                    os.unlink(audio_file_name)
+                    logger.info(f'已清理临时音频: {audio_file_name}')
+            except Exception as cleanup_e:
+                logger.warning(f'清理临时音频失败: {cleanup_e}')
 
         except Exception as e:
-            logger.error(f'播放音频文件时发生错误: {e}')
+            logger.error(f'播放音频文件时发生异常: {e}')
 
     def _play_text_sequential(self, text_segments, volume):
         """串行播放文本（回退方案）"""

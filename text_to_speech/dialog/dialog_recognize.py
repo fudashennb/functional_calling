@@ -807,7 +807,7 @@ class AudioStreamReader:
 
     def __init__(self,
                  asr_server_url: str = "http://10.10.20.30:5000/recognize",
-                 dialog_ai_url: str = "http://localhost:8766/v1/voice/query",  # 改为 functional_call 新服务端
+                 dialog_ai_url: str = "http://10.10.68.49:8766/v1/voice/query",  # 指向机器人大脑 IP
                  sample_rate: int = 48000,  # 修改为48000Hz以匹配硬件支持
                  channels: int = 1,  # 修改为单通道，避免通道数问题
                  vad_queue_size: int = 5000,  # 减少队列大小，保持轻量
@@ -890,6 +890,23 @@ class AudioStreamReader:
         self.config_loader = get_config_loader()
         _logger.info("✅ 文本处理器初始化完成")
 
+        # --- 配置加载 (解耦与动态维护) ---
+        # 1. 基础服务地址 (优先从 system_config 加载)
+        self.asr_server_url = self.config_loader.get_config_value('system_config', 'asr_server_url', asr_server_url)
+        self.dialog_ai_url = self.config_loader.get_config_value('system_config', 'dialog_ai_url', dialog_ai_url)
+        
+        # 2. 控制开关：是否启用本地音频流监听（模式 A）
+        # 优先读取环境变量，其次读取配置文件，最后默认为 False
+        env_enable = os.getenv("ENABLE_LOCAL_LISTENING")
+        if env_enable is not None:
+            self.enable_listening = env_enable.lower() == "true"
+        else:
+            self.enable_listening = self.config_loader.get_config_value('system_config', 'enable_local_listening', False)
+
+        # 3. 动态参数加载
+        self.max_speech_duration = self.config_loader.get_config_value('system_config', 'max_speech_duration_s', max_speech_duration)
+        self.silence_duration_ms = self.config_loader.get_config_value('system_config', 'vad_silence_duration_ms', 1300)
+
         # 音频流相关属性
         self.vad_queue = deque(maxlen=vad_queue_size)  # VAD队列
         self.stream_active = False
@@ -906,19 +923,19 @@ class AudioStreamReader:
         self.other_queue_lock = threading.Lock()
 
         _logger.info("✅ 音频流读取器初始化完成")
-        _logger.info(f"   ASR服务器: {asr_server_url}")
-        _logger.info(f"   采样率: {sample_rate}Hz")
-        _logger.info(f"   通道数: {channels}")
-        _logger.info(f"   音频设备ID: {self.device_id}")
-        _logger.info(f"   VAD队列大小: {vad_queue_size}")
-        _logger.info(f"   VAD最小chunk数: {vad_min_chunks}")
-        _logger.info(f"   最大语音时长: {max_speech_duration}秒")
-        _logger.info(f"   最大处理时间: {max_processing_time}秒")
+        _logger.info(f"   本地监听状态: {'启用' if self.enable_listening else '停用'}")
+        _logger.info(f"   ASR服务器: {self.asr_server_url}")
+        _logger.info(f"   AI接口地址: {self.dialog_ai_url}")
+        _logger.info(f"   采样率: {sample_rate}Hz, 通道数: {channels}")
 
     def start_audio_stream(self):
         """
         启动音频流读取器，持续读取chunk并存入两个队列
         """
+        if not self.enable_listening:
+            _logger.info("⚠️ [跳过] 本地音频流监听已在配置中停用。")
+            return
+
         if self.stream_active:
             _logger.warning("⚠️ 音频流已经在运行中")
             return
@@ -1591,82 +1608,53 @@ class AudioStreamReader:
     def _request_server(self, url: str, text: str, ext_id: str = "", custom_session_id: str = ""):
         """
         向服务器发送查询请求并返回响应
-
-        Args:
-            url: 服务器URL。如果为 None，则视为推送语音注入，直接返回处理后的原文本。
-            text: 查询文本或推送文本
-            ext_id: 外部关联 ID (msg_id)
-            custom_session_id: 自定义会话 ID (chat_id)
-
-        Returns:
-            str: 服务器响应的resultMsg内容，或处理后的推送文本
         """
+        if not text or not text.strip():
+            return ""
+
+        ai_reply = ""
+        response_data = {}
+
         try:
             if url is None:
-                # 融入逻辑：如果是推送消息，模拟服务器响应数据结构
+                # 模式 A: 推送语音注入 (来自大脑的回调)
                 ai_reply = text
                 response_data = {"resultCode": 0, "resultMsg": text, "source": "external_push"}
-                _logger.info(f"📥 接收到推送语音内容，正在融入主流程处理...")
+                _logger.info(f"📥 接收到推送语音内容: {text[:50]}...")
             else:
-                # 构造请求数据 (增加透传参数)
+                # 模式 B: 正常 AI 对话请求
                 request_data = {
                     "query": text,
-                    "session_id": custom_session_id or None, # 如果没传则由服务端生成
-                    "request_id": ext_id # 确保传递非空的 request_id
+                    "session_id": custom_session_id or None,
+                    "request_id": ext_id
                 }
-                # 发送POST请求
-                response = requests.post(
-                    url,
-                    json=request_data,
-                    timeout=30  # 30秒超时
-                )
-                # 检查响应状态
-                response.raise_for_status()  # 检查 HTTP 状态码
-                
-                # 解析 JSON 响应（标准 JSON 格式）
+                response = requests.post(url, json=request_data, timeout=30)
+                response.raise_for_status()
                 response_data = response.json()
                 
-            # 验证响应格式并直接返回resultMsg
-            if "resultCode" in response_data and "resultMsg" in response_data:
-                ai_reply = response_data["resultMsg"]  # 直接取字段
-            else:
-                _logger.warning(f"⚠️ 服务器响应格式异常（缺少 resultCode/resultMsg）: {response_data}")
-                return "服务器响应格式异常"
+                if "resultCode" in response_data and "resultMsg" in response_data:
+                    ai_reply = response_data["resultMsg"]
+                else:
+                    _logger.warning(f"⚠️ 服务器响应格式异常: {response_data}")
+                    return "服务器响应异常"
                 
-            # --- 统一的后续处理逻辑（清洗、记录、保存） ---
-            # 使用配置驱动的文本处理器
+            # --- 统一的后续处理逻辑（清洗、标准化） ---
+            # 1. 使用配置驱动的文本处理器进行清洗
             ai_reply = self.text_processor.process_text(ai_reply)
                 
-            # 清理多余的空格
+            # 2. 清理多余空格和特殊格式
             import re
             ai_reply = re.sub(r'\s+', ' ', ai_reply).strip()
                 
-            # 记录成功日志
+            # 3. 记录日志
             if url:
-                _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:100]}...")
-                
-            # 保存用户请求和AI回复作为证据（推送消息也会被记录）
-            # self._save_ai_response_text(text, ai_reply, str(response_data))
+                _logger.info(f"✅ 服务器响应成功: resultCode={response_data.get('resultCode')}, resultMsg={ai_reply[:50]}...")
                 
             return ai_reply
-        except requests.exceptions.ConnectionError as e:
-            _logger.error(f"❌ 服务器连接失败: 无法连接到 {url} - {e}")
-            return "服务器连接失败"
-        except requests.exceptions.Timeout as e:
-            _logger.error(f"❌ 服务器连接超时: {url} 响应超时 - {e}")
-            return "服务器连接超时"
-        except requests.exceptions.HTTPError as e:
-            _logger.error(f"❌ HTTP错误: {e}")
-            return f"服务器错误: {e}"
-        except ValueError as e:
-            _logger.error(f"❌ JSON解析失败: {e}, 响应内容: {response.text[:200]}")
-            return "服务器响应格式错误"
-        except requests.exceptions.RequestException as e:
-            _logger.error(f"❌ 请求异常: {e}")
-            return "请求异常"
+
         except Exception as e:
-            _logger.error(f"❌ 未知错误: {e}")
-            return "未知错误"
+            _logger.error(f"❌ 语音交互请求失败: {e}")
+            return f"系统处理异常: {type(e).__name__}"
 
     def _save_ai_response_text(self, user_request: str, ai_response: str, response_data: str):
         """

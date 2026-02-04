@@ -4,7 +4,7 @@ import asyncio
 import time
 import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 import uvicorn
 import logging
 import os
@@ -596,45 +596,31 @@ async def resume_music():
 
 
 @app.post('/voice/callback')
-async def voice_callback(request: VoiceCallbackRequest):
+async def voice_callback(request: VoiceCallbackRequest, background_tasks: BackgroundTasks):
     """
-    接收任务事件回调，并通过对话流程（_request_server -> _synthesize_and_play_text）注入播报
-    同时将播报内容同步到外部流式队列（如飞书）
+    接收任务事件回调，通过对话流程注入播报，并同步推送到外部流
     """
     try:
-        # 统一使用 request_id
         target_id = request.request_id or request.ext_msg_id
-        _logger.info(f"📥 收到回调推送: {request.speak_text} (event={request.event_type}, target_id={target_id})")
+        _logger.info(f"📥 收到回调推送: {request.speak_text} (event={request.event_type}, id={target_id})")
         
-        # 1. 优先推送给外部流（如飞书）
+        # 1. 实时推送给外部流（如飞书）
         if target_id and target_id in STREAM_QUEUES:
-            _logger.info(f"📤 正在转发到流队列 [{target_id}]: {request.speak_text}")
             await STREAM_QUEUES[target_id].put(request.speak_text)
-            
-            # 如果是结束类事件，发送特殊结束标记
             if request.event_type in ["completed", "failed"]:
-                _logger.info(f"🏁 收到终结事件，发送 [__END__] 到队列: {target_id}")
                 await STREAM_QUEUES[target_id].put("__END__")
-        else:
-            _logger.debug(f"ℹ️ 流队列不存在或已关闭: {target_id}")
 
-        # 2. 定义后台执行逻辑，融入机器人本地语音播报流程
-        def run_in_pipeline():
-            # 融入文本清洗和日志记录流程
-            ai_response = conversation_reader._request_server(None, request.speak_text)
-            # 调用现有播放流程
+        # 2. 异步融入机器人本地语音播报
+        def _process_and_play(text: str):
+            # 内部已包含清洗逻辑
+            ai_response = conversation_reader._request_server(None, text)
             conversation_reader._synthesize_and_play_text(ai_response)
 
-        # 异步执行，不阻塞回调发送方
-        threading.Thread(target=run_in_pipeline, daemon=True).start()
+        background_tasks.add_task(_process_and_play, request.speak_text)
         
-        return {
-            'status': 'success',
-            'message': '内容已分发',
-            'event_type': request.event_type
-        }
+        return {'status': 'success', 'event_type': request.event_type}
     except Exception as e:
-        _logger.error(f"❌ 分发回调失败: {e}")
+        _logger.error(f"❌ 处理回调失败: {e}")
         return {'status': 'error', 'message': str(e)}
 
 class InjectStreamRequest(BaseModel):

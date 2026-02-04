@@ -22,9 +22,10 @@ class ReActAgent(ABC):
     def __init__(self, llm: DashScopeLLMProvider):
         self.llm = llm
 
-    async def run(self, task: str, session: SessionState, context: Dict[str, Any] = None) -> str:
+    async def run(self, task: str, session: SessionState, context: Dict[str, Any] = None, system_prompt_vars: Dict[str, str] = None) -> str:
         """
         执行 Agent 循环。
+        :param system_prompt_vars: 用于替换 System Prompt 中占位符的变量字典
         """
         logger.info(f"[{self.name}] 开始任务: {task}")
         
@@ -39,7 +40,7 @@ class ReActAgent(ABC):
             logger.info(f"[{self.name}] 步骤 {step_count}/{max_steps}")
             
             # 1. Think (思考并决定行动)
-            response = await self._think(session)
+            response = await self._think(session, system_prompt_vars)
             content = response.get("content")
             tool_calls = response.get("tool_calls")
 
@@ -78,12 +79,25 @@ class ReActAgent(ABC):
 
         return "已达到最大步骤数，未能完成任务。"
 
-    async def _think(self, session: SessionState) -> Dict[str, Any]:
+    async def _think(self, session: SessionState, system_prompt_vars: Dict[str, str] = None) -> Dict[str, Any]:
         """
         调用 LLM 获取决策，并确保消息历史完整（不破坏 assistant-tool 对）。
         """
-        # 1. 构建系统提示
-        messages = [{"role": "system", "content": self.system_prompt}]
+        # 1. 构建系统提示 (支持动态变量替换)
+        current_system_prompt = self.system_prompt
+        if system_prompt_vars:
+            try:
+                # 使用 safe_substitute 防止未匹配的键报错，或者直接 format
+                # 这里简单粗暴使用 format，但要小心 prompt 里本来就有的大括号
+                # 建议使用 string.Template 或手动 replace
+                for key, val in system_prompt_vars.items():
+                    placeholder = f"{{{key}}}"
+                    if placeholder in current_system_prompt:
+                        current_system_prompt = current_system_prompt.replace(placeholder, str(val))
+            except Exception as e:
+                logger.warning(f"系统提示词变量替换失败: {e}")
+
+        messages = [{"role": "system", "content": current_system_prompt}]
         
         # 2. 安全切片逻辑：确保不切断 assistant-tool 链路
         raw_history = session.conversation

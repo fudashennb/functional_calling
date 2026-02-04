@@ -68,8 +68,17 @@ class Orchestrator:
 
     def warm_up(self) -> None:
         """
-        预热所有耗时资源。
+        系统预热：
+        1. 检查 LLM 连接
+        2. 预加载静态资源（地图等）
         """
+        logger.info("正在预热 Orchestrator...")
+        
+        # 1. 初始化资源管理器 (预加载地图)
+        from core.resource_manager import resource_manager
+        # 假设 start_server.sh 运行在 functional_call 根目录，则资源在 ./resources
+        resource_manager.initialize(resources_dir="resources")
+        
         logger.info("系统预热完成。")
 
     def handle_query(self, req: VoiceQueryRequest) -> tuple[int, VoiceQueryResponse]:

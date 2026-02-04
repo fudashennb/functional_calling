@@ -87,10 +87,17 @@ class GlobalValues:
         self.messenger = getFeishuApiToken()
         self.processed_message_ids = {"1"}
         self.filter_history_message = {}
+        
+        # 配置信息
         app_id = os.environ.get('APP_ID')
         app_secret = os.environ.get('APP_SECRET')
-        dashscope.api_key = os.environ[
-            'DASHSCOPE_API_KEY']  # load API-key from environment variable DASHSCOPE_API_KEY
+        dashscope.api_key = os.environ.get('DASHSCOPE_API_KEY')
+        
+        # 机器人大脑配置
+        self.brain_ip = os.environ.get("BRAIN_IP", "10.10.68.49")
+        self.brain_port = os.environ.get("BRAIN_PORT", "8766")
+        self.brain_url = f"http://{self.brain_ip}:{self.brain_port}"
+        
         self.recognition = Recognition(
             model='paraformer-realtime-v2',
             format='opus',
@@ -146,6 +153,19 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         log_print("info:", self.path)
+        
+        # 【新增】处理来自大脑的语音推送回调
+        if self.path == '/voice/callback':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            log_print(f"🎤 收到大脑推送: {post_data}")
+            self.handle_voice_callback(post_data)
+            # 响应 200 OK
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"code":0, "msg":"ok"}')
+            return
+
         if self.path == '/card':
             content_length = int(self.headers['Content-Length'])
             post_data = self.rfile.read(content_length)
@@ -161,6 +181,37 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
             response = self.handle_event_action(post_data)
             if response:
                 self.send_end_response(response)
+    
+    def handle_voice_callback(self, data):
+        try:
+            payload = json.loads(data)
+            # 提取关键字段
+            session_id = payload.get("session_id") # 对应 chat_id
+            request_id = payload.get("request_id") # 对应 msg_id (如果透传成功)
+            speak_text = payload.get("speak_text")
+            event_type = payload.get("event_type")
+            
+            if speak_text:
+                # 加上前缀以区分不同类型的消息（可选）
+                prefix = ""
+                if event_type == "fault": prefix = "⚠️ "
+                elif event_type == "completed": prefix = "✅ "
+                elif event_type == "failed": prefix = "❌ "
+                
+                final_text = f"{prefix}{speak_text}"
+                log_print(f"📤 转发到飞书: {final_text}")
+                
+                # 尝试使用 request_id (如果是 message_id) 回复，或者直接发给 session_id (chat_id)
+                # 由于 getFeishuApiToken().send_message 是 reply 接口，最好用 message_id
+                target_id = request_id if request_id else session_id
+                
+                if target_id:
+                    getFeishuApiToken().send_message(target_id, final_text) 
+                else:
+                    log_print("⚠️ 回调缺少 ID，无法发送飞书")
+                
+        except Exception as e:
+            log_print(f"处理回调失败: {e}")
     
     def on_ai_tool_callback(self,message_id,response):
         res = getFeishuApiToken().send_message(message_id, response)
@@ -217,39 +268,28 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
         # 移除 Gemini 相关逻辑，重定向到语音服务
         try:
-            # 使用流式请求获取机器人的多次播报结果
-            # 通过 SSH 隧道 (L 8866:localhost:8800) 访问机器人语音服务
-            inject_url = "http://127.0.0.1:8866/v1/voice/inject_stream"
-            log_print(f"🔗 [{message_id}] 正在建立语音服务流式连接: {inject_url}")
+            # 【中转架构】飞书消息 -> 大脑 forward -> 语音模块 inject_stream
+            brain_forward_url = f"{global_values.brain_url}/v1/voice/forward"
+            log_print(f"🔄 [{message_id}] 指令发往大脑中转: {brain_forward_url}")
             
-            with requests.post(
-                inject_url, 
-                json={"text": content_text, "session_id": chat_id, "msg_id": message_id}, 
-                stream=True, 
-                timeout=120
-            ) as r:
-                log_print(f"📡 [{message_id}] 连接已建立，等待数据...")
-                for line in r.iter_lines():
-                    if line:
-                        speak_text = line.decode('utf-8').strip()
-                        if speak_text == "[DONE]":
-                            log_print(f"🏁 [{message_id}] 任务完成标记收到，主动关闭连接")
-                            break
-                        getFeishuApiToken().send_message(message_id, speak_text)
-                        log_print(f"📢 [{message_id}] 飞书同步播报: {speak_text}")
+            payload = {
+                "text": content_text,
+                "session_id": chat_id,
+                "msg_id": message_id
+            }
             
-            log_print(f"✅ [{message_id}] 流式处理正常结束")
-            # 注意：此处不再调用 self.send_end_response，因为 do_POST 已经立即回复过 200 OK 了
-        except Exception as e:
-            err_msg = str(e)
-            # 针对已关闭连接的预期内异常，进行精简处理
-            if "Bad file descriptor" in err_msg or "Broken pipe" in err_msg:
-                log_print(f"ℹ️ [{message_id}] 客户端已提前关闭连接 (预期内): {type(e).__name__}")
-            elif "Read timed out" in err_msg:
-                log_print(f"⚠️ [{message_id}] 语音服务请求超时 (隧道可能不稳定)")
+            resp = requests.post(brain_forward_url, json=payload, timeout=5)
+            
+            if resp.status_code == 200:
+                log_print(f"✅ [{message_id}] 大脑已接收并开始中转任务")
             else:
-                log_print(f"❌ [{message_id}] 语音服务重定向异常: {type(e).__name__}: {e}")
-                getFeishuApiToken().send_message(message_id, f"系统提示：任务处理过程中出现异常({type(e).__name__})。")
+                log_print(f"⚠️ [{message_id}] 大脑中转异常: {resp.status_code}")
+                getFeishuApiToken().send_message(message_id, "⚠️ 机器人大脑处理指令失败，请重试。")
+            
+        except Exception as e:
+            log_print(f"❌ [{message_id}] 无法连接大脑: {e}")
+            getFeishuApiToken().send_message(message_id, "⚠️ 无法连接到机器人大脑，请检查网络。")
+            
         finally:
             log_print(f"🏁 [{message_id}] 线程处理流程结束")
     def getGeminiReponse(self, parsed_data):
@@ -262,11 +302,11 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
             time_stamp_int = int(time_stamp)
             if message_id in global_values.processed_message_ids:
                 log_print(f"消息为重复消息已处理，message_id: {message_id}")
-                return
+                return {"code": 0, "msg": "ok"}
             if (chat_id in global_values.filter_history_message):
                 if (time_stamp_int < global_values.filter_history_message[chat_id]):
                     log_print(f"消息为历史消息，不处理，message_id: {message_id}")
-                    return
+                    return {"code": 0, "msg": "ok"}
             global_values.processed_message_ids.add(message_id)
             log_print("msg_type:", msg_type)
             if msg_type == 'audio' or msg_type == 'text' or msg_type == 'file':
@@ -274,10 +314,11 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
                 global_values.filter_history_message[chat_id] = time_stamp_int
                 executor.submit(self.multiThreadHandleQuestion, chat_id,
                                 message_id, parsed_data)
+            return {"code": 0, "msg": "ok"}
 
         else:
-            response = getFeishuApiToken().send_message("0", "无法回复")
-            self.send_end_response(response)
+            log_print("收到未知类型的事件，忽略")
+            return {"code": 0, "msg": "unknown event"}
 
     def handle_card_action(self, data):
         parsed_data = json.loads(data)
@@ -292,17 +333,19 @@ class MyHttpRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.getGeminiReponse(parsed_data)
 
     def handle_event_action(self, data):
-        response = {}
         parsed_data = json.loads(data)
         encrypt = parsed_data.get('encrypt', '')
         cipher = AESCipher(os.environ.get('ENCRYPT_KEY'))
         parsed_data = json.loads(cipher.decrypt_string(encrypt))
         log_print(f"parsed_data:{parsed_data}")
+        
+        # 立即返回 challenge (如果存在)
         if parsed_data.get('challenge', ''):
-            response = {"challenge": parsed_data.get('challenge', '')}
-        else:
-            response = self.getGeminiReponse(parsed_data)
-        self.send_end_response(response)
+            return {"challenge": parsed_data.get('challenge', '')}
+        
+        # 针对消息事件，立即异步处理并返回 200 OK，防止飞书重试
+        self.getGeminiReponse(parsed_data)
+        return {"code": 0, "msg": "ok"}
 
 
 PORT = 60502
@@ -326,7 +369,8 @@ def setup_ssh_tunnel():
         log_print(f"⚠️ 隧道自动建立失败: {e}")
 
 def start_feishu_server():
-    setup_ssh_tunnel()
+    # setup_ssh_tunnel()  # 新架构下，飞书端不需要直接建立隧道，由大脑端统一管理
+    socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("", PORT), MyHttpRequestHandler) as httpd:
         log_print(f"Server started at localhost:{PORT}")
         httpd.serve_forever()

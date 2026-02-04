@@ -58,6 +58,9 @@ class Settings:
     voice_push_enabled: bool = True
     voice_push_timeout_s: int = 5
 
+    # 语音中转（飞书 -> 大脑 -> 机器人语音模块）
+    remote_voice_url: str = "http://127.0.0.1:8866/v1/voice/inject_stream"
+
     # 提示词目录
     prompts_dir: str = str(Path(__file__).resolve().parent.parent / "prompts")
 
@@ -94,6 +97,7 @@ def load_settings() -> Settings:
         voice_push_url=os.getenv("VOICE_PUSH_URL"),
         voice_push_enabled=_get_bool("VOICE_PUSH_ENABLED", True),
         voice_push_timeout_s=_get_int("VOICE_PUSH_TIMEOUT_S", 5),
+        remote_voice_url=os.getenv("REMOTE_VOICE_URL", "http://127.0.0.1:8866/v1/voice/inject_stream"),
         prompts_dir=os.getenv("PROMPTS_DIR", str(Path(__file__).resolve().parent.parent / "prompts")),
     )
 

@@ -14,11 +14,13 @@
 
 import logging
 import os
+import requests
+from pydantic import BaseModel
 
 # 统一日志（自动配置 + 行号 + trace字段）
 import log_config  # noqa: F401
 
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import JSONResponse
 import uvicorn
 
@@ -33,6 +35,44 @@ settings = load_settings()
 orchestrator = Orchestrator(settings)
 
 app = FastAPI(title="AMR语音控制服务", description="多代理 + 事件流（进度播报）", version="1.0.0")
+
+
+# 新增：转发请求的数据模型
+class ForwardRequest(BaseModel):
+    text: str
+    session_id: str
+    msg_id: str
+
+@app.post("/v1/voice/forward")
+async def voice_forward(req: ForwardRequest, background_tasks: BackgroundTasks):
+    """
+    [大脑中枢] 飞书 -> 大脑 -> 语音模块 (通过 SSH 隧道)
+    """
+    logger.info(f"🔄 [中转] 收到指令: '{req.text[:30]}' (Session: {req.session_id})")
+    
+    # 使用从 settings 加载的语音模块地址
+    remote_voice_url = settings.remote_voice_url
+    
+    def _do_forward(url: str, text: str, sess_id: str, msg_id: str):
+        try:
+            # 使用 stream=True 开启连接后立即检查状态，不等待流式内容结束
+            with requests.post(
+                url,
+                json={"text": text, "session_id": sess_id, "msg_id": msg_id},
+                timeout=10,
+                stream=True
+            ) as resp:
+                if resp.status_code == 200:
+                    logger.info(f"✅ [中转] 指令投递成功: {msg_id}")
+                else:
+                    logger.warning(f"⚠️ [中转] 语音模块响应异常 ({resp.status_code}): {msg_id}")
+        except Exception as e:
+            logger.error(f"❌ [中转] 投递失败: {e}")
+
+    # 使用 FastAPI 后台任务替代手动线程
+    background_tasks.add_task(_do_forward, remote_voice_url, req.text, req.session_id, req.msg_id)
+    
+    return {"status": "forwarded", "msg_id": req.msg_id}
 
 
 @app.on_event("startup")
